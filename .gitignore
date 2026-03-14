@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Frontend production
+frontend/build/
+frontend/android/build/
+frontend/ios/App/public/
+
+# Backend production/misc
+backend/__pycache__/
+backend/temp_videos/*.mp4
+!backend/temp_videos/MommySquats.mp4
+!backend/temp_videos/PushUp.mp4
+!backend/temp_videos/squat_11.mp4
+!backend/temp_videos/Squats.mp4
+!backend/temp_videos/VID_20260125_102827.mp4
+!backend/temp_videos/Video_Generation_One_Squat.mp4
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Misc
+.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
