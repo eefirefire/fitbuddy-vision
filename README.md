@@ -19,22 +19,6 @@ No video is stored on any server. Exercise mode sends 15 keyframes extracted cli
 
 ---
 
-## Screenshots
-
-### Landing page
-![Landing page](docs/screenshots/landing.png)
-
-### Exercise mode — Gemini coaching feedback
-![Exercise mode feedback](docs/screenshots/exercise_feedback.png)
-
-### Rehab mode — live joint tracking overlay
-![Rehab tracking](docs/screenshots/rehab_tracking.png)
-
-### Camera alignment checker (Good → Poor)
-![Camera alignment](docs/screenshots/camera_alignment.png)
-
----
-
 ## Validated accuracy
 
 Tested against OnlineProtractor.com (digital goniometer) across 17 knee-extension repetitions:
