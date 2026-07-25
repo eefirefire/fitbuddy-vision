@@ -1,0 +1,209 @@
+FitBuddy AI — How I Built an AI That Watches You Squat and Judges Your Form
+============================================================================
+
+
+Have you ever filmed yourself at the gym, watched it back, and had absolutely no idea if you were doing it right?
+
+That was me. Every squat session I had a phone propped against a water bottle, recording — but without a coach, the footage was useless. I had no idea what I was looking at.
+
+So I thought: what if an AI could watch the video and just... tell me?
+
+That's FitBuddy AI. You upload a video of your squats. It counts your reps, rates your form out of 10, tells you what you're doing well, and tells you exactly what's breaking down and why. No personal trainer required.
+
+Here's how I built it, step by step.
+
+
+—————————————————————————————
+STEP 1 — SCRAPING THE DATA
+—————————————————————————————
+
+Before I could build anything, I needed examples. Real squat videos with real feedback so the AI had something to learn from.
+
+I scraped two sources: Reddit and YouTube.
+
+From Reddit I pulled videos from fitness subreddits where people post form checks and ask for feedback. The gold mine here wasn't just the videos — it was the comments. Experienced lifters leave genuinely detailed critiques: "your knees are caving at the bottom," "you're losing your brace," "depth is good but the bar path is drifting forward." That's exactly the kind of language I needed.
+
+From YouTube I pulled dedicated squat tutorial and form breakdown videos, where coaches narrate what they're seeing frame by frame.
+
+The scraping scripts live in /data/reddit/ (reddit.py and youtube.py). Nothing fancy — just pulling video links and their associated text, then downloading the videos locally for processing.
+
+At this point I had a messy pile of videos and text. Time to organize it.
+
+
+—————————————————————————————
+STEP 2 — BUILDING THE FOLDER STRUCTURE (RESULTS)
+—————————————————————————————
+
+Raw data is useless if you can't find anything. I needed a structure that matched each video to its analysis so I could use it for training, evaluation, and prompt testing later.
+
+I landed on this hierarchy:
+
+  results/
+    Group_General_Training/
+      SubGroup_Front_Squats/
+        <video_name>/
+          <video_name>_description.json
+          <video_name>_structured_feedback.json
+          <video_name>_feedback_evaluation.json
+          <video_name>_evaluation.json
+
+Every video gets its own folder. Inside that folder are four files:
+
+- description.json — metadata about the video (source, exercise type, visible faults)
+- structured_feedback.json — the AI-generated analysis in a fixed JSON schema
+- feedback_evaluation.json — how well the AI feedback matched what a human expert would say
+- evaluation.json — overall alignment scores for rep count, form rating, and fault identification
+
+This structure meant I could run a script, point it at any video folder, and know exactly where to find the ground truth, the prediction, and the score. It also made it easy to add more exercise groups later (front squats, goblet squats, etc.) without reorganizing everything.
+
+The structured_data.py script handles converting raw model outputs into that standardized schema automatically.
+
+
+—————————————————————————————
+STEP 3 — PROMPT ENGINEERING
+—————————————————————————————
+
+This is where things got interesting.
+
+I'm not training a custom model. I'm using Google Gemini — a multimodal model that can look at images and reason about them. My job is to write prompts that make it analyze squat form reliably, consistently, and in a format I can actually use in code.
+
+The first attempts were rough. Zero-shot prompting (just describing the task with no examples) gave wildly inconsistent output. Sometimes the model would write an essay. Sometimes it would return a single sentence. The rating scale meant different things each time. Completely unusable.
+
+So I started experimenting systematically. I tested five strategies:
+
+Zero-Shot — just the task description, no examples. Fast and cheap, but the output format drifted constantly.
+
+Three-Shot — three example video+analysis pairs. Better format stability. Expensive in tokens.
+
+CoT-Verification-Shot — one example plus explicit chain-of-thought instructions. The model had to reason through two phases before answering:
+  PHASE 1: Fault triage — is this fault recurring across multiple reps, or just a one-frame anomaly?
+  PHASE 2: Rep scope — only count reps where I can see a full descent AND ascent. No partial reps.
+
+Self-Reflection-Pass — after the initial analysis, ask the model to verify its own output and correct mistakes. A second API call, but it eliminates a lot of false positives.
+
+Balanced-Few-Shot — multiple examples covering different fault types. Good for edge cases, expensive.
+
+I ran 5 trials per strategy, scored each against the ground truth using a judge model, and tracked alignment across rep count accuracy, rating accuracy, and fault detection precision.
+
+CoT-Verification-Shot plus the Reflection Pass won. Best balance of accuracy, reliability, and cost.
+
+The judge model (evaluator.py) is just another Gemini call that compares the AI's output against the human-annotated ground truth and returns an alignment score between 0 and 1. Simple but effective for comparing strategies without subjective impressions.
+
+
+—————————————————————————————
+STEP 4 — SAM3 MODE
+—————————————————————————————
+
+Standard Gemini vision looks at the raw video frames. SAM3 mode adds skeleton keypoint overlays on top of those frames before sending them to the model.
+
+The idea: if the model can see joint positions explicitly marked (hip, knee, ankle, shoulder, elbow), it should be able to reason about angles more precisely than when inferring them from raw pixel appearance alone.
+
+In SAM3 mode, the video gets routed to the FastAPI backend instead of being processed entirely in the browser. The backend handles frame extraction with OpenCV, overlays the skeleton annotations, and then sends those annotated frames to Gemini.
+
+The user toggles SAM3 on or off from the dashboard. Off by default — the client-side path is faster and doesn't require the backend running.
+
+SAM3 mode is particularly useful for edge cases: unusual camera angles, baggy clothing, low lighting — situations where the model might struggle to identify joint positions from appearance alone.
+
+
+—————————————————————————————
+STEP 5 — EXPERIMENTING WITH few-shot.py
+—————————————————————————————
+
+Once I had the prompt strategy figured out, I built a proper experimentation harness in few-shot.py to stress-test everything.
+
+The script:
+1. Loads all video folders from the results directory
+2. For each strategy, selects exemplar videos (the "teaching examples") and a blind test target
+3. Runs inference 5 times per strategy (to account for model variance)
+4. Scores each result against ground truth using the judge model
+5. Prints a summary table of average alignment scores per strategy
+
+Running this repeatedly is how I confirmed that CoT + Reflection was the right call. I could see the numbers — not just a gut feeling.
+
+one-shot.py is the simpler sibling: single exemplar, single test target, one inference run. I used this for quick sanity checks when tweaking the system prompt wording without wanting to run the full 5-strategy benchmark.
+
+The one-shot exemplar that made it into production is hardcoded in the frontend's analyzeService.js. It's a verified squat video with known ground-truth analysis. Every single Gemini request includes this example so the model always has a concrete anchor for what good output looks like.
+
+
+—————————————————————————————
+STEP 6 — BUILDING THE WEBSITE
+—————————————————————————————
+
+With the inference pipeline working, I built the frontend in React with Vite.
+
+Two pages:
+
+Landing Page — the hook. An animated SVG of a squat with joint angle markers, a quick pitch of what FitBuddy does, and a button to the dashboard. Dark navy background, blue accents.
+
+Dashboard — the main event. Left side: drag-and-drop video upload zone with the SAM3 toggle. Right side: the analysis output.
+
+The output panel shows:
+- Exercise name and rep count
+- Overall rating bar (color-coded: green for 8+, cyan for 6-7, orange for 4-5, red below 4)
+- Load level estimate as pill buttons (light / moderate / heavy / maximal)
+- "What's Working" — green dot list of positive aspects
+- "Needs Improvement" — orange dot list of faults with corrective detail
+- A coaching summary paragraph in plain English
+
+The core inference logic lives in analyzeService.js. Here's what it does when you hit Analyze:
+
+1. Creates an off-screen canvas and seeks through the video to 15 evenly spaced timestamps
+2. At each timestamp, draws the frame onto the canvas and exports it as a base64 JPEG
+3. Builds the Gemini request: system prompt + one-shot exemplar + 15 target frames
+4. Calls the Gemini API directly from the browser (no server needed for default mode)
+5. Parses the JSON out of the response (Gemini sometimes wraps it in markdown fences — the parser strips those)
+6. Feeds the parsed data into the UI components
+
+The whole thing runs client-side. No video is uploaded to a server. No footage stored anywhere. The API key hits Gemini directly from the browser.
+
+For deployment, the frontend is a standard Vite build — drop the dist/ folder onto any static host and it works. The FastAPI backend only needs to be running if SAM3 mode is in use.
+
+
+—————————————————————————————
+THE OUTPUT SCHEMA
+—————————————————————————————
+
+Every Gemini response has to conform to this structure. If it doesn't parse cleanly, the UI shows an error rather than crashing or displaying garbage.
+
+{
+  "exercise": "barbell_back_squat",
+  "rep_count": 5,
+  "estimated_load": "moderate",
+  "overall_rating": 7,
+  "good": [
+    { "aspect": "Depth", "detail": "Hip crease consistently below parallel." }
+  ],
+  "needs_improvement": [
+    { "aspect": "Lumbar Stability", "detail": "Mild posterior pelvic tilt at the bottom." }
+  ],
+  "feedback": "Good depth. Brace harder before descent to reduce the pelvic tuck.",
+  "visual_anchors": ["frame_3", "frame_11"]
+}
+
+The visual_anchors field references which of the 15 sampled frames the model used as evidence for its conclusions. Useful for debugging when a rating seems off.
+
+
+—————————————————————————————
+WHAT I LEARNED
+—————————————————————————————
+
+A few things I would have done differently starting out:
+
+One good example beats many mediocre ones. The single hardcoded exemplar stabilized model output more than three-shot prompting with lower-quality examples did. Quality of the anchor matters more than quantity.
+
+Measure before you decide. I almost went with three-shot prompting because it felt more robust. The evaluation harness showed CoT one-shot actually scored higher. Without the numbers I would have made the wrong call and paid more in tokens for it.
+
+Client-side frame extraction is underrated. Doing it in the browser with Canvas means no server infrastructure, no storage costs, and no user footage leaving the device. For a fitness app where people are filming themselves, that privacy property actually matters.
+
+The reflection pass is worth the extra API call. For a form-feedback use case, telling someone their knee is caving when it isn't is worse than missing a minor fault. Precision over recall. The second call to self-verify paid for itself.
+
+
+—————————————————————————————
+FINAL THOUGHTS
+—————————————————————————————
+
+FitBuddy AI started because I wanted coaching feedback I didn't have access to. It ended up being a pretty clean example of how far you can get with a capable multimodal model, a well-engineered prompt, and a strict output schema — without training anything custom.
+
+The full stack: React + Vite on the frontend, FastAPI + OpenCV for the SAM3 backend, Google Gemini for inference, and a lightweight evaluation framework to keep prompt decisions grounded in data rather than vibes.
+
+If you're building something similar — any application that needs to analyze user video — the pattern generalizes well. Sample frames in the browser, anchor the model with one verified example, enforce a JSON schema, validate the output before rendering. You can get surprisingly far with that loop before you need anything more exotic.

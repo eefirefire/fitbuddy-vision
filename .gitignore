@@ -3,20 +3,29 @@ node_modules/
 .pnp
 .pnp.js
 
-# Frontend production
-frontend/build/
-frontend/android/build/
-frontend/ios/App/public/
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
 
-# Backend production/misc
-backend/__pycache__/
-backend/temp_videos/*.mp4
-!backend/temp_videos/MommySquats.mp4
-!backend/temp_videos/PushUp.mp4
-!backend/temp_videos/squat_11.mp4
-!backend/temp_videos/Squats.mp4
-!backend/temp_videos/VID_20260125_102827.mp4
-!backend/temp_videos/Video_Generation_One_Squat.mp4
+# Model weights / large binaries
+*.pt
+*.pkl
+*.onnx
+*.db
+
+# Frontend build output
+dist/
+build/
+
+# Video / media test fixtures
+*.mp4
+*.mov
+*.avi
+
+# Archives (use Git LFS or external storage instead of committing these)
+*.zip
 
 # Environment variables
 .env
@@ -30,3 +39,13 @@ backend/temp_videos/*.mp4
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Large research dataset — use external storage
+data/
+
+# Claude Code session files
+.claude/
+
+# Scratch / personal notes
+note.txt
+solver.cpp

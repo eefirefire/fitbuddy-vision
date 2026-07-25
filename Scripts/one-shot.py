@@ -9,7 +9,7 @@ from PIL import Image
 # ==========================================
 # 1. EXPERIMENT CONFIGURATION
 # ==========================================
-client = genai.Client(api_key="AIzaSyBQuaK32BhiNCo9BdKpAAwrPJoNTVYKK-w")
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", "YOUR_API_KEY_HERE"))
 ANALYST_MODEL_ID = "models/gemini-3.1-flash-lite-preview"
 
 BASE_SYSTEM_INSTRUCTION = """You are an Expert Biomechanical Analyst specializing in powerlifting squat analysis.

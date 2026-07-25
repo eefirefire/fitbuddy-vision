@@ -1,0 +1,15 @@
+flask
+fastapi
+uvicorn
+python-multipart
+werkzeug
+mediapipe
+opencv-python
+numpy
+Pillow
+google-genai
+pytest
+
+# sam3 is not on PyPI — install from the official Segment Anything Model 3
+# repo/checkpoint source before running generate_sam3_embeddings_db.py or
+# visual_fix_generator.py.

@@ -5,7 +5,7 @@ import google.generativeai as genai
 from google.api_core import exceptions
 
 # --- CONFIGURATION ---
-API_KEY = "AIzaSyBQuaK32BhiNCo9BdKpAAwrPJoNTVYKK-w "
+API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_API_KEY_HERE")
 # Path based on your VS Code sidebar: data/squats
 SOURCE_DIR = "data/squats" 
 

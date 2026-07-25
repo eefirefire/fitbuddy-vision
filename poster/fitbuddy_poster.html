@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>FitBuddy AI — AI Builders 2026 Poster</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;700;800&display=swap');
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Screen: scale A0 (841mm) down to 900px */
+html, body {
+  background: #777; margin: 0; padding: 16px;
+  font-family: 'Sarabun', Arial, sans-serif;
+}
+.outer { width: 900px; height: 1273px; overflow: hidden; margin: 0 auto; }
+.inner {
+  width: 841mm; height: 1189mm;
+  transform: scale(0.2832); transform-origin: top left;
+}
+
+/* Print: @page A0, no transform */
+@media print {
+  html, body { background: white; padding: 0; margin: 0; height: 1189mm; overflow: hidden; }
+  .outer { width: 841mm; height: 1189mm; overflow: hidden; margin: 0; }
+  .inner { transform: none; }
+  @page { size: A0 portrait; margin: 0; }
+}
+
+/* ═══════════════════════════════════════
+   POSTER  (all sizes in mm / pt)
+═══════════════════════════════════════ */
+.poster {
+  width: 841mm; height: 1189mm; overflow: hidden;
+  background: #fff; display: flex; flex-direction: column;
+}
+
+/* ── HEADER (bordered box, per template) ── */
+.hdr-wrap { margin: 9mm 12mm 0; flex-shrink: 0; }
+.hdr-box  {
+  display: flex; align-items: stretch;
+  border: 0.8mm solid #111;
+}
+
+/* Left: AI Builders logo */
+.hdr-logo {
+  padding: 6mm 8mm;
+  border-right: 0.5mm solid #555;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  flex-shrink: 0; min-width: 62mm;
+}
+.ai-wm { font-size: 8mm; font-weight: 900; font-family: 'Arial Black', Arial; letter-spacing: 0.5mm; margin-top: 2mm; }
+
+/* Center: title + authors */
+.hdr-mid {
+  flex: 1; padding: 6mm 10mm;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+}
+.ttl  { font-size: 27.6mm; font-weight: 800; line-height: 1.1; color: #000; }
+.auth { font-size: 19.8mm; font-weight: 700; color: #222; margin-top: 2mm; }
+.sch  { font-size: 12mm;   font-weight: 400; color: #555; margin-top: 1.5mm; }
+
+/* Right: sponsor logos */
+.hdr-right {
+  border-left: 0.5mm solid #555;
+  padding: 4mm 5mm;
+  display: flex; flex-direction: column;
+  align-items: flex-end; justify-content: flex-start;
+  gap: 2mm; flex-shrink: 0; min-width: 55mm;
+}
+.sp-row { display: flex; gap: 2mm; justify-content: flex-end; }
+.sp {
+  font-size: 5mm; font-weight: 700; border: 0.4mm solid #999;
+  padding: 1mm 2.5mm; border-radius: 1mm; white-space: nowrap;
+}
+
+/* ── BODY ── */
+.body {
+  flex: 1; min-height: 0;
+  padding: 7mm 12mm 6mm;
+  display: flex; flex-direction: column; gap: 6mm;
+  overflow: hidden;
+}
+.abs-row { flex-shrink: 0; }
+.cols { display: flex; gap: 7mm; flex: 1; min-height: 0; overflow: hidden; }
+.cl { width: 348mm; display: flex; flex-direction: column; gap: 5.5mm; overflow: hidden; }
+.cr { flex: 1; display: flex; flex-direction: column; gap: 5.5mm; overflow: hidden; }
+
+/* Card */
+.card { border: 0.4mm solid #bcc8dc; border-radius: 1.5mm; overflow: hidden; flex-shrink: 0; }
+.ch { padding: 2mm 5mm; font-size: 16.9mm; font-weight: 700; color: #fff; letter-spacing: 0.2mm; }
+.ch.navy   { background: #1a3a6b; }
+.ch.teal   { background: #0d6b5e; }
+.ch.green  { background: #1a6b3a; }
+.ch.red    { background: #7a1414; }
+.ch.purple { background: #4a1a80; }
+.ch.cyan   { background: #0d5a7a; }
+.cb { background: #f6f8fc; padding: 4mm 5mm; }
+
+.bt   { font-size: 12.7mm; line-height: 1.45; color: #111; }
+.bt b { font-weight: 700; }
+
+/* Bullets */
+.blist { display: flex; flex-direction: column; gap: 2mm; margin-top: 2.5mm; }
+.bi { display: flex; gap: 3.5mm; align-items: flex-start; font-size: 12.7mm; line-height: 1.4; color: #111; }
+.bd { width: 2.8mm; height: 2.8mm; border-radius: 50%; background: #c44; flex-shrink: 0; margin-top: 3.5mm; }
+
+/* Steps */
+.steps { display: flex; flex-direction: column; gap: 2.5mm; margin-top: 2.5mm; }
+.step  { display: flex; gap: 4mm; align-items: flex-start; }
+.sn { width: 8mm; height: 8mm; border-radius: 50%; background: #1a3a6b; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 5.5mm; font-weight: 700; flex-shrink: 0; margin-top: 2mm; }
+.st { font-size: 12.7mm; line-height: 1.4; color: #111; }
+.st b { font-weight: 700; }
+
+/* Pipeline */
+.pipe { display: flex; flex-direction: column; align-items: center; margin-top: 2.5mm; }
+.pb  { width: 100%; background: #dce5f5; border: 0.4mm solid #1a3a6b; border-radius: 2mm; padding: 2.5mm 4mm; font-size: 10.5mm; font-weight: 700; text-align: center; color: #1a2035; }
+.pb.out { background: #d5eedd; border-color: #1a6b3a; color: #1a4025; }
+.parr { font-size: 8.5mm; color: #1a3a6b; padding: 0.8mm 0; line-height: 1; }
+.pnote { font-size: 9mm; font-weight: 400; color: #5a6a80; }
+.priv { background: #eafaf4; border: 0.4mm solid #a0d8bc; border-radius: 1.5mm; padding: 2.5mm 4mm; margin-top: 3mm; font-size: 10.5mm; line-height: 1.4; color: #1a4030; }
+
+/* Scores */
+.sc-list { display: flex; flex-direction: column; gap: 3mm; margin-top: 2.5mm; }
+.sc   { display: flex; flex-direction: column; gap: 1.5mm; }
+.sc-t { display: flex; justify-content: space-between; align-items: center; }
+.sc-n { font-size: 11mm; color: #111; }
+.sc-n.w { font-weight: 700; color: #1a3a6b; }
+.sc-v { font-size: 13mm; font-weight: 700; }
+.sc-bg { background: #dde3ec; border-radius: 1.5mm; height: 5mm; }
+.sc-b  { height: 5mm; border-radius: 1.5mm; }
+.bdg { display: inline-block; font-size: 8mm; font-weight: 700; padding: 0.5mm 2.5mm; border-radius: 2mm; margin-left: 2mm; vertical-align: middle; }
+.bdg-b { background: #d5eedd; color: #1a6b3a; border: 0.4mm solid #1a6b3a; }
+.bdg-p { background: #dce5f5; color: #1a3a6b; border: 0.4mm solid #1a3a6b; }
+
+/* Finds */
+.finds { display: flex; flex-direction: column; gap: 2.5mm; margin-top: 2.5mm; }
+.find  { display: flex; gap: 3.5mm; align-items: flex-start; background: #fff; border: 0.4mm solid #d0dae8; border-radius: 1.5mm; padding: 2.5mm 4mm; }
+.fi { font-size: 7.5mm; flex-shrink: 0; }
+.ft { font-size: 12.7mm; line-height: 1.4; color: #111; }
+.ft b { font-weight: 700; display: block; margin-bottom: 0.3mm; }
+
+/* Future */
+.futs { display: flex; flex-direction: column; gap: 2.5mm; margin-top: 2.5mm; }
+.fut  { display: flex; gap: 3.5mm; align-items: flex-start; background: #fff; border: 0.4mm solid #d0dae8; border-radius: 1.5mm; padding: 2.5mm 4mm; }
+.fu-i { width: 9mm; height: 9mm; border-radius: 2mm; display: flex; align-items: center; justify-content: center; font-size: 6mm; flex-shrink: 0; }
+.fu-t { font-size: 12.7mm; line-height: 1.4; color: #111; }
+.fu-t b { font-weight: 700; display: block; }
+.ftag { display: inline-block; font-size: 9mm; font-weight: 700; padding: 0.3mm 2mm; border-radius: 2mm; margin-left: 2mm; vertical-align: middle; }
+
+/* Conclusion */
+.conc { display: flex; gap: 5mm; margin-top: 2.5mm; }
+.cc   { flex: 1; }
+.cc-h { font-size: 13mm; font-weight: 700; color: #1a1f2e; margin-bottom: 1.5mm; }
+.cc-b { font-size: 12mm; line-height: 1.45; color: #222; }
+
+/* References */
+.refs { display: flex; flex-direction: column; gap: 1.5mm; margin-top: 2.5mm; }
+.ref  { font-size: 11mm; line-height: 1.45; color: #222; }
+.rn   { font-weight: 700; color: #1a3a6b; }
+
+/* ── FOOTER ── */
+.ftr {
+  border-top: 0.8mm solid #1a3a6b; flex-shrink: 0;
+  padding: 3.5mm 12mm;
+  display: flex; align-items: center; justify-content: space-between; gap: 6mm;
+  background: #f0f3f8;
+}
+.ftr-s { font-size: 9.5mm; color: #4a5a70; line-height: 1.5; }
+.ftr-s b { color: #1a2035; }
+.ftr-d { font-size: 9.5mm; color: #4a5a70; text-align: center; line-height: 1.5; }
+.ftr-e { font-size: 10mm; font-weight: 800; color: #1a3a6b; text-align: right; line-height: 1.4; }
+.ftr-e small { display: block; font-weight: 400; font-size: 9mm; color: #6a7a90; }
+</style>
+
+<script>
+window.addEventListener('DOMContentLoaded', () => {
+  const p = new URLSearchParams(window.location.search);
+  if (p.get('fullsize') === '1') {
+    document.querySelector('.outer').style.cssText =
+      'width:841mm;height:1189mm;overflow:hidden;margin:0;';
+    document.querySelector('.inner').style.transform = 'none';
+    document.body.style.cssText = 'padding:0;margin:0;background:white;overflow:hidden;';
+  }
+});
+</script>
+</head>
+<body>
+<div class="outer"><div class="inner"><div class="poster">
+
+<!-- ── HEADER ── -->
+<div class="hdr-wrap">
+<div class="hdr-box">
+
+  <!-- AI Builders logo -->
+  <div class="hdr-logo">
+    <svg width="50mm" height="46mm" viewBox="0 0 200 184" xmlns="http://www.w3.org/2000/svg">
+      <!-- Diamonds -->
+      <polygon points="50,44 68,26 86,44 68,62" fill="#e0408a"/>
+      <polygon points="68,30 86,13 104,30 86,47" fill="#c43070"/>
+      <polygon points="86,44 104,26 122,44 104,62" fill="#8b35c8"/>
+      <polygon points="104,30 122,13 140,30 122,47" fill="#6020a0"/>
+      <!-- Top face -->
+      <polygon points="26,86 100,56 174,86 100,116" fill="white" stroke="black" stroke-width="3"/>
+      <!-- Left face -->
+      <polygon points="26,86 100,116 100,178 26,148" fill="#e2e2e2" stroke="black" stroke-width="3"/>
+      <!-- Right face -->
+      <polygon points="174,86 100,116 100,178 174,148" fill="#c8c8c8" stroke="black" stroke-width="3"/>
+      <!-- A (top face) -->
+      <line x1="60" y1="79" x2="66" y2="93" stroke="black" stroke-width="4" stroke-linecap="round"/>
+      <line x1="66" y1="93" x2="77" y2="87" stroke="black" stroke-width="4" stroke-linecap="round"/>
+      <line x1="77" y1="87" x2="83" y2="101" stroke="black" stroke-width="4" stroke-linecap="round"/>
+      <line x1="65" y1="89" x2="75" y2="83" stroke="black" stroke-width="2" stroke-linecap="round"/>
+      <!-- I (top face) -->
+      <line x1="91" y1="75" x2="91" y2="94" stroke="black" stroke-width="4" stroke-linecap="round"/>
+      <!-- B (right face) -->
+      <line x1="128" y1="132" x2="128" y2="162" stroke="#333" stroke-width="4" stroke-linecap="round"/>
+      <path d="M128,132 Q147,132 147,142 Q147,150 128,150" fill="none" stroke="#333" stroke-width="2.5"/>
+      <path d="M128,150 Q149,151 149,161 Q149,170 128,162" fill="none" stroke="#333" stroke-width="2.5"/>
+    </svg>
+    <div class="ai-wm">AI BUILDERS</div>
+  </div>
+
+  <!-- Title + Authors -->
+  <div class="hdr-mid">
+    <div class="ttl">FitBuddy AI: Squat Form Analysis via Multimodal LLM</div>
+    <div class="auth">Authors: [Your Name]</div>
+    <div class="sch">[School Name] &nbsp;·&nbsp; AI Builders 2026</div>
+  </div>
+
+  <!-- Sponsor logos -->
+  <div class="hdr-right">
+    <div class="sp-row">
+      <div class="sp" style="color:#c47000;border-color:#c47000;font-size:6mm;">425</div>
+      <div class="sp" style="color:#004b8d;border-color:#004b8d;">CENTRAL<br>RETAIL</div>
+    </div>
+    <div class="sp-row">
+      <div class="sp" style="color:#004b8d;">DIGITAL</div>
+      <div class="sp" style="background:#1a3a6b;color:#fff;border-color:#1a3a6b;">VISTEC</div>
+    </div>
+    <div class="sp-row">
+      <div class="sp" style="color:#2a2a2a;">AWS</div>
+      <div class="sp" style="color:#555;">nimble</div>
+    </div>
+  </div>
+</div>
+</div><!-- /hdr-wrap -->
+
+<!-- ── BODY ── -->
+<div class="body">
+
+  <!-- Abstract -->
+  <div class="card abs-row">
+    <div class="ch navy">Abstract</div>
+    <div class="cb">
+      <div class="bt">FitBuddy AI analyzes squat videos and delivers professional-grade feedback instantly: rep count, a 10-point form score, and corrective cues. Using <b>Google Gemini's multimodal reasoning</b>, five prompt strategies were benchmarked over 5 trials each and scored by an LLM judge against human-annotated ground truth. The <b>Self-Reflection Pass</b> scored highest (7.40/10), outperforming Zero-Shot (4.46), Three-Shot (5.81), and CoT-Verification alone (5.70). The production system combines Self-Reflection with CoT for maximum accuracy. Only 15 JPEG frames reach the Gemini API — raw video is never uploaded to any server.</div>
+    </div>
+  </div>
+
+  <!-- Two columns -->
+  <div class="cols">
+
+    <!-- LEFT -->
+    <div class="cl">
+
+      <div class="card">
+        <div class="ch teal">Introduction &amp; Motivation</div>
+        <div class="cb">
+          <div class="bt">Filming workouts is common — interpreting the footage is not. Without a coach, people cannot verify squat depth, knee tracking, or bracing, risking injury and stalled progress.</div>
+          <div class="blist">
+            <div class="bi"><div class="bd"></div><span><b>No feedback loop:</b> recorded footage is useless without expert eyes</span></div>
+            <div class="bi"><div class="bd"></div><span><b>Access gap:</b> personal trainers are expensive and unavailable</span></div>
+            <div class="bi"><div class="bd"></div><span><b>Privacy:</b> existing tools require uploading full video to third-party servers</span></div>
+          </div>
+          <div class="bt" style="margin-top:2.5mm;"><b>FitBuddy AI</b> solves all three: instant rep count, form score, and corrective cues from a short video clip.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ch green">Materials &amp; Methods</div>
+        <div class="cb">
+          <div class="steps">
+            <div class="step"><div class="sn">1</div><div class="st"><b>Data collection:</b> Reddit r/formcheck + YouTube coaching breakdowns — videos paired with expert critique.</div></div>
+            <div class="step"><div class="sn">2</div><div class="st"><b>Ground truth:</b> 40 videos standardized into a 4-file JSON hierarchy: <i>description / structured_feedback / evaluation</i>.</div></div>
+            <div class="step"><div class="sn">3</div><div class="st"><b>Benchmark:</b> 5 prompt strategies × 5 trials, scored by Gemini 2.5 Flash (LLM judge) against human annotations.</div></div>
+            <div class="step"><div class="sn">4</div><div class="st"><b>Deployment:</b> Best strategies combined. 15 frames via Canvas API → Gemini → JSON validation → dashboard.</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ch purple">Key Learnings</div>
+        <div class="cb">
+          <div class="finds">
+            <div class="find"><div class="fi">💡</div><div class="ft"><b>Reflection is the highest-leverage intervention</b>Self-verification alone (7.40) outperformed Three-Shot (5.81) and CoT standalone (5.70).</div></div>
+            <div class="find"><div class="fi">📊</div><div class="ft"><b>Measure before deciding</b>Without the evaluation harness, Three-Shot "felt" more robust — the judge ranked it 3rd.</div></div>
+            <div class="find"><div class="fi">🔒</div><div class="ft"><b>Client-side extraction removes infrastructure</b>15 JPEG frames only. Raw video never leaves the browser — no server costs, no privacy risk.</div></div>
+            <div class="find"><div class="fi">✅</div><div class="ft"><b>Precision over recall for coaching</b>The reflection pass reduces false positives — the right tradeoff for a coaching tool.</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ch cyan">Future Improvements</div>
+        <div class="cb">
+          <div class="futs">
+            <div class="fut"><div class="fu-i" style="background:#dce5f5;">🏥</div><div class="fu-t"><b>Rehab Mode <span class="ftag" style="background:#dce5f5;color:#1a3a6b;border:0.4mm solid #1a3a6b;">Planned</span></b>Video-based rehabilitation tracking for recovery exercises outside the clinic.</div></div>
+            <div class="fut"><div class="fu-i" style="background:#d5eedd;">🏆</div><div class="fu-t"><b>More Exercises <span class="ftag" style="background:#d5eedd;color:#1a6b3a;border:0.4mm solid #1a6b3a;">Planned</span></b>Deadlift, push-up, bench press — same pipeline, same evaluation framework.</div></div>
+            <div class="fut"><div class="fu-i" style="background:#ede5f5;">📱</div><div class="fu-t"><b>Mobile &amp; Live Camera <span class="ftag" style="background:#ede5f5;color:#4a2080;border:0.4mm solid #4a2080;">Planned</span></b>Real-time analysis from a phone camera, removing the upload step.</div></div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /cl -->
+
+    <!-- RIGHT -->
+    <div class="cr">
+
+      <div class="card">
+        <div class="ch navy">System Pipeline</div>
+        <div class="cb">
+          <div class="pipe">
+            <div class="pb">Upload squat video</div>
+            <div class="parr">↓</div>
+            <div class="pb">15 frames via Canvas API<br><span class="pnote">In-browser · no server upload</span></div>
+            <div class="parr">↓</div>
+            <div class="pb">Gemini request<br><span class="pnote">CoT prompt + 1-shot exemplar + frames</span></div>
+            <div class="parr">↓</div>
+            <div class="pb">Pass 1 — CoT-Verification</div>
+            <div class="parr">↓</div>
+            <div class="pb">Pass 2 — Self-Reflection</div>
+            <div class="parr">↓</div>
+            <div class="pb">JSON schema validation</div>
+            <div class="parr">↓</div>
+            <div class="pb out">Rep count · Score /10 · Fault list</div>
+          </div>
+          <div class="priv"><b>Privacy:</b> Only 15 JPEG frames sent to Gemini API. Raw video never uploaded to any server and never stored.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ch teal">Results · LLM Judge Score /10</div>
+        <div class="cb">
+          <div class="sc-list">
+            <div class="sc"><div class="sc-t"><span class="sc-n w">Self-Reflection Pass <span class="bdg bdg-b">BEST</span><span class="bdg bdg-p">PROD</span></span><span class="sc-v" style="color:#1a6b3a;">7.40</span></div><div class="sc-bg"><div class="sc-b" style="width:74%;background:#1a6b3a;"></div></div></div>
+            <div class="sc"><div class="sc-t"><span class="sc-n">Balanced Few-Shot</span><span class="sc-v" style="color:#1a5a8b;">6.75</span></div><div class="sc-bg"><div class="sc-b" style="width:67.5%;background:#1a5a8b;"></div></div></div>
+            <div class="sc"><div class="sc-t"><span class="sc-n">Three-Shot</span><span class="sc-v" style="color:#2a7ab0;">5.81</span></div><div class="sc-bg"><div class="sc-b" style="width:58.1%;background:#2a7ab0;"></div></div></div>
+            <div class="sc"><div class="sc-t"><span class="sc-n">CoT-Verification <span class="bdg bdg-p">PROD</span></span><span class="sc-v" style="color:#c47000;">5.70</span></div><div class="sc-bg"><div class="sc-b" style="width:57%;background:#c47000;"></div></div></div>
+            <div class="sc"><div class="sc-t"><span class="sc-n">Zero-Shot</span><span class="sc-v" style="color:#b52020;">4.46</span></div><div class="sc-bg"><div class="sc-b" style="width:44.6%;background:#b52020;"></div></div></div>
+          </div>
+          <div class="bt" style="margin-top:3mm;font-size:10.5mm;color:#555;">5 strategies × 5 trials. Judged by Gemini 2.5 Flash against 40 human-annotated profiles. Production combines Self-Reflection + CoT.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ch red">Discussion &amp; Conclusion</div>
+        <div class="cb">
+          <div class="conc">
+            <div class="cc">
+              <div class="cc-h">What this shows</div>
+              <div class="cc-b">A self-verification pass — no extra training — raised alignment from 4.46 to 7.40/10 against human expert ground truth. The most impactful single change.</div>
+            </div>
+            <div class="cc">
+              <div class="cc-h">The pattern generalizes</div>
+              <div class="cc-b">Sample frames in-browser → one verified exemplar → model self-verifies → enforce JSON schema. Applies to any video-based movement analysis task.</div>
+            </div>
+            <div class="cc">
+              <div class="cc-h">Broader impact</div>
+              <div class="cc-b">High-quality AI coaching without expensive infrastructure — expert-level feedback accessible to anyone with a smartphone and a short video.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="ch navy">References</div>
+        <div class="cb">
+          <div class="refs">
+            <div class="ref"><span class="rn">[1]</span> Wei, J. et al. (2022). Chain-of-Thought Prompting Elicits Reasoning in Large Language Models. <i>NeurIPS 2022</i>.</div>
+            <div class="ref"><span class="rn">[2]</span> Zheng, L. et al. (2023). Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena. <i>NeurIPS 2023</i>.</div>
+            <div class="ref"><span class="rn">[3]</span> Google DeepMind. (2024). Gemini: A Family of Highly Capable Multimodal Models. <i>Technical Report</i>.</div>
+            <div class="ref"><span class="rn">[4]</span> Reddit r/formcheck community. Squat form submissions used as human-annotated ground-truth training data.</div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /cr -->
+  </div><!-- /cols -->
+</div><!-- /body -->
+
+<!-- ── FOOTER ── -->
+<div class="ftr">
+  <div class="ftr-s"><b>Stack:</b> React + Vite · Google Gemini (gemini-3.1-flash-lite-preview) · Canvas API · Gemini 2.5 Flash (judge)</div>
+  <div class="ftr-d"><b>Data:</b> Reddit r/formcheck + YouTube · 40 paired profiles · 4-file JSON hierarchy · 5 strategies × 5 trials</div>
+  <div class="ftr-e">AI Builders Showcase 2026<small>Poster · A0 Portrait</small></div>
+</div>
+
+</div></div></div>
+</body>
+</html>
