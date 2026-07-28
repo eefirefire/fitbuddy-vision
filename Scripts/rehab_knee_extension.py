@@ -919,6 +919,10 @@ class RehabSession:
         self.state_machine = LSIStateMachine()
         self._candidates = {"left": _CandidateLegTrack(), "right": _CandidateLegTrack()}
         self._detected_landmark_side = None  # decided lazily, see _decide_tracked_landmark_side
+        self._alignment_checker = CameraAlignmentChecker()
+        self._trunk_checker = TrunkComplianceChecker()
+        self._frames_processed = 0
+        self._frames_with_pose = 0
 
     def _active_side(self) -> str | None:
         if self.state_machine.state == RehabState.RECORD_LEFT:
@@ -930,6 +934,10 @@ class RehabSession:
     def _reset_side_tracking(self):
         self._candidates = {"left": _CandidateLegTrack(), "right": _CandidateLegTrack()}
         self._detected_landmark_side = None
+        self._alignment_checker = CameraAlignmentChecker()
+        self._trunk_checker = TrunkComplianceChecker()
+        self._frames_processed = 0
+        self._frames_with_pose = 0
 
     def advance_state(self) -> RehabState:
         # Commit whatever was just recorded (live-streaming path) BEFORE
@@ -1000,7 +1008,7 @@ class RehabSession:
         track = self._candidates[winner]
         best = track.best_rep
 
-        record_fn = self.state_machine.record_left if ui_side == "left" else self.state_machine.record_right
+        record_fn = self.state_machine.record_left if winner == "left" else self.state_machine.record_right
         record_fn(
             peak_velocity=best["peak_velocity_deg_s"] if best else 0.0,
             peak_angle=best["peak_angle"] if best else 0.0,
@@ -1129,7 +1137,11 @@ def _mjpeg_generator():
             results = _pose_model.process(image_rgb)
 
             frame_result = {}
+            _session._frames_processed += 1
             if results.pose_landmarks:
+                _session._frames_with_pose += 1
+                _session._alignment_checker.push_frame(results.pose_landmarks)
+                _session._trunk_checker.push_frame(results.pose_landmarks)
                 frame_result = _session.process_frame(results.pose_landmarks, w, h, time.time())
                 mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
@@ -1222,7 +1234,7 @@ def upload_video():
 
     winning_track = _session._candidates[_session._decide_tracked_landmark_side()]
     _session.finalize_recording()
-    side = "left" if _session.state_machine.state == RehabState.RECORD_LEFT else "right"
+    side = _session._detected_landmark_side or ("left" if _session.state_machine.state == RehabState.RECORD_LEFT else "right")
     limb = _session.state_machine.left if side == "left" else _session.state_machine.right
 
     return jsonify({
@@ -1237,6 +1249,40 @@ def upload_video():
         "reps": winning_track.reps,
         "camera_alignment": alignment_checker.result(),
         "trunk_compliance": trunk_checker.result(),
+    })
+
+
+@app.route("/api/rehab/clip-summary", methods=["POST"])
+@login_required
+def clip_summary():
+    """
+    Returns the ClipSummary payload for a live-stream recording.
+    Call this after stopping the live camera (before clicking Next) to get
+    the same feedback card that the upload endpoint returns.
+    """
+    if _session.state_machine.state not in (RehabState.RECORD_LEFT, RehabState.RECORD_RIGHT):
+        return jsonify({"error": "No active recording to summarise."}), 400
+
+    winning_track = _session._candidates[_session._decide_tracked_landmark_side()]
+    _session.finalize_recording()
+
+    side = _session._detected_landmark_side or (
+        "left" if _session.state_machine.state == RehabState.RECORD_LEFT else "right"
+    )
+    limb = _session.state_machine.left if side == "left" else _session.state_machine.right
+
+    return jsonify({
+        "side": side,
+        "detected_landmark_side": _session._detected_landmark_side,
+        "frames_processed": _session._frames_processed,
+        "frames_with_pose": _session._frames_with_pose,
+        "peak_velocity_deg_s": limb.peak_velocity_deg_s,
+        "peak_extension_angle_deg": limb.peak_extension_angle_deg,
+        "extension_deficit_deg": limb.extension_deficit_deg,
+        "is_inhibited": limb.is_inhibited,
+        "reps": winning_track.reps,
+        "camera_alignment": _session._alignment_checker.result(),
+        "trunk_compliance": _session._trunk_checker.result(),
     })
 
 

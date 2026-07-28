@@ -38,3 +38,10 @@ export async function resetRehabSession() {
   if (!res.ok) throw new Error('Could not reach rehab backend (reset).')
   return res.json()
 }
+
+export async function getLiveClipSummary() {
+  const res = await fetch(`${REHAB_API_BASE}/api/rehab/clip-summary`, { method: 'POST', ...WITH_SESSION })
+  const data = await res.json()
+  if (!res.ok) throw new Error(data.error || 'Could not fetch live clip summary.')
+  return data
+}

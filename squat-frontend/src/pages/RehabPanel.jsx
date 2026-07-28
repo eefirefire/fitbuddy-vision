@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { uploadRehabVideo, advanceRehabState, getRehabReport, resetRehabSession, REHAB_STREAM_URL } from '../rehabService'
+import { uploadRehabVideo, advanceRehabState, getRehabReport, resetRehabSession, getLiveClipSummary, REHAB_STREAM_URL } from '../rehabService'
 import { getCurrentUser, getCurrentIntake } from '../authService'
 import {
   classifyTrackingQuality, classifyExtensionDeficit,
@@ -140,11 +140,17 @@ export default function RehabPanel() {
     setLiveStreaming(true)
   }
 
-  function handleStopCamera() {
-    // Removing the <img> (by flipping liveStreaming off) closes the
-    // underlying HTTP connection, which is what actually releases the
-    // server's webcam — there's no separate "stop" API call needed.
+  async function handleStopCamera() {
+    // Removing the <img> closes the underlying HTTP connection, releasing
+    // the webcam. Then immediately fetch the clip summary so the user gets
+    // the same feedback card as after an upload.
     setLiveStreaming(false)
+    if (!canRecord) return
+    try {
+      setUploadResult(await getLiveClipSummary())
+    } catch (err) {
+      setError(err.message)
+    }
   }
 
   async function handleAdvance() {
