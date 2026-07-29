@@ -9,6 +9,9 @@ __pycache__/
 .venv/
 venv/
 
+# Windows artifacts
+Scripts/nul
+
 # Model weights / large binaries
 *.pt
 *.pkl

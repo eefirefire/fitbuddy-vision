@@ -2,7 +2,7 @@
 
 **Hybrid edge-cloud computer vision for exercise coaching and orthopedic rehabilitation — no wearables, no lab, just a laptop webcam.**
 
-Built by [Anavin Srison (Evin)](https://github.com/eefirefire) & Evarin Srison (Eva) · TICTA 2026 Student Project
+Built by [Anavin Srison (Evin)](https://github.com/eefirefire) · TISIIF 2026 & TICTA 2026 Student Project
 
 ---
 
@@ -13,7 +13,7 @@ FitBuddy runs two parallel pipelines, each assigned to the compute tier appropri
 | Mode | Input | Where it runs | What you get |
 |---|---|---|---|
 | **Exercise Mode** | Video upload | Cloud (Gemini Vision) | Structured squat coaching — rep count, faults, coaching notes |
-| **Rehab Mode** | Live webcam | On-device (MediaPipe) | Real-time joint angle, rep tracking, Limb Symmetry Index |
+| **Rehab Mode** | Webcam or video upload | On-device (MediaPipe) | Real-time joint angle, rep count, extension deficit, coaching cues |
 
 No video is stored on any server. Exercise mode sends 15 keyframes extracted client-side in the browser; rehab mode never leaves the device.
 
@@ -51,8 +51,9 @@ Benchmarked on a real clip via `Scripts/benchmark_rehab_pipeline.py`:
 
 ```
 REHAB MODE
-  Webcam → MediaPipe BlazePose (on-device) → joint angles → rep counter → LSI report
-  No cloud dependency. Runs continuously at 15–17 FPS.
+  Webcam or video upload → MediaPipe BlazePose (on-device) → joint angles → rep counter
+  → extension deficit · coaching cues · descent speed · trunk compliance
+  No cloud dependency. Live mode runs at 15–17 FPS.
 
 EXERCISE MODE
   Video upload → 15 keyframes extracted in-browser (Canvas API, <50MB RAM)
