@@ -432,14 +432,69 @@ class ExtensionDeficitTracker:
     # as "dropped, not lowered" — worth saying out loud if asked.
     MIN_ECCENTRIC_DURATION_S = 2.0
 
+    # _observed_min_angle only ever decreases (see _update_observed_min), so
+    # a single anomalous frame — a brief MediaPipe occlusion/jitter glitch
+    # reporting an implausibly low angle — would otherwise permanently drag
+    # the rep-acceptance floor down for the rest of the recording, with no
+    # recovery. Feeding a small trailing MEDIAN (not the raw instantaneous
+    # angle) into the min-tracker suppresses a single wild outlier frame —
+    # a median of 3 samples where one is a spike still returns one of the
+    # two normal values, not the spike — without needing a multi-frame
+    # "wait and confirm" delay. (An earlier version of this fix used a
+    # streak-based confirmation scheme instead; that broke normal-speed
+    # movement, since a genuinely fast extension moves several degrees a
+    # frame — faster than the confirmation window could keep up with — and
+    # could leave the floor stuck at `inf`, i.e. unreachable, for an entire
+    # rep. A rolling median has no such stall condition: it responds within
+    # a couple of frames to any real, sustained change.)
+    MIN_ANGLE_MEDIAN_WINDOW = 3
+
     def __init__(self):
         self._armed = True
         self._running_max_angle = float("-inf")
         self._observed_min_angle = float("inf")
+        # Trailing window feeding the median filter — see
+        # MIN_ANGLE_MEDIAN_WINDOW / _update_observed_min.
+        self._recent_angles = deque(maxlen=self.MIN_ANGLE_MEDIAN_WINDOW)
         # Timestamp the most recent peak was committed at, so the NEXT
         # rearm (leg back at the bent position) can compute how long that
         # rep's descent took. None when there's no pending descent to time.
         self._peak_timestamp = None
+
+    def _update_observed_min(self, current_angle: float) -> None:
+        """
+        Median-filtered update to _observed_min_angle — see
+        MIN_ANGLE_MEDIAN_WINDOW above for why the raw instantaneous angle
+        isn't used directly. Shared by check_for_peak (ongoing rep
+        detection) and observe_baseline (the settling-period calibration
+        below), so both are protected by the same outlier rejection. Unlike
+        a confirmation-streak approach, this never gets "stuck": it always
+        has a usable (if still-adapting) value after the very first frame,
+        since deque(maxlen=...) means the median is computed over however
+        many samples have arrived so far, not a fixed count.
+        """
+        self._recent_angles.append(current_angle)
+        smoothed = float(np.median(self._recent_angles))
+        self._observed_min_angle = min(self._observed_min_angle, smoothed)
+
+    def observe_baseline(self, angle: float) -> None:
+        """
+        Call during the live settling grace period (see RehabSession.
+        is_settling) instead of check_for_peak — updates ONLY the baseline
+        _observed_min_angle, without running rep-detection/AMI logic. Without
+        this, _observed_min_angle stayed at its initial `inf` through the
+        entire ~3s settling window and got seeded entirely from whatever the
+        FIRST post-settling frame happened to show — if the patient was
+        already mid-extension at that exact instant (rather than at their
+        real resting bent position), the resulting rep-acceptance floor
+        could be nearly unreachable for the rest of the recording. Feeding
+        the settling window's frames into this instead means the floor is
+        already calibrated to the patient's real resting position by the
+        time rep-detection actually begins.
+        """
+        if np.isnan(angle):
+            return
+        self._update_observed_min(angle)
 
     def check_for_peak(self, current_angle: float, current_velocity: float, timestamp: float = None):
         """
@@ -460,7 +515,7 @@ class ExtensionDeficitTracker:
         only for backward compatibility with old call sites that don't time
         the eccentric phase; pass it to get eccentric_duration_s.
         """
-        self._observed_min_angle = min(self._observed_min_angle, current_angle)
+        self._update_observed_min(current_angle)
 
         eccentric_duration_s = None
         if current_angle <= self._observed_min_angle + self.REARM_MARGIN_DEG:
@@ -490,7 +545,13 @@ class ExtensionDeficitTracker:
         self._armed = False  # stays disarmed until the leg returns to the bent position
         self._peak_timestamp = timestamp
         peak_angle = self._running_max_angle
-        deficit = round(self.IDEAL_FULL_EXTENSION_DEG - peak_angle, 1)
+        # Clamped to >=0: IDEAL_FULL_EXTENSION_DEG (160) is now below the
+        # anatomical max (180), so a genuinely good peak_angle can legitimately
+        # exceed the target — without this clamp that produced a negative
+        # "deficit" (e.g. -10), which the frontend displayed verbatim as
+        # something like "Full Extension -10°". A peak beyond the target is
+        # still just full extension, not a negative deficit.
+        deficit = max(round(self.IDEAL_FULL_EXTENSION_DEG - peak_angle, 1), 0.0)
         return round(peak_angle, 1), deficit, eccentric_duration_s
 
 
@@ -826,6 +887,35 @@ class TrunkComplianceChecker:
         return {"max_deviation_deg": deviation, "level": level, "message": message}
 
 
+class CueChannel:
+    """
+    A single (text, sequence-number) slot for a state-change-triggered cue.
+    emit() bumps the sequence number so callers can detect "a new cue just
+    fired" without relying on the text itself — two different events can
+    legitimately produce identical text back to back (e.g. two different
+    reps both earning "Good"), and a text-only diff would silently drop the
+    second one.
+
+    Each cue CATEGORY (rep-quality, camera-alignment, ...) needs its own
+    channel instance — sharing one slot across categories is exactly the bug
+    this project hit earlier: a rep-quality cue firing shortly after a
+    camera-alignment cue would silently overwrite it before the frontend
+    ever polled it, since rep events happen far more often than alignment
+    transitions. Rather than hand-duplicating a second text/seq field pair
+    to dodge that (which just reproduces the same clobbering risk for
+    whichever THIRD cue category comes along next), each category gets its
+    own CueChannel instance and they can never collide with each other.
+    """
+
+    def __init__(self):
+        self.text: str | None = None
+        self.seq: int = 0
+
+    def emit(self, text: str) -> None:
+        self.text = text
+        self.seq += 1
+
+
 class _CandidateLegTrack:
     """
     Independent kinematics pipeline for ONE candidate MediaPipe landmark
@@ -886,18 +976,10 @@ class _CandidateLegTrack:
         # neither can see raw pose data, since MediaPipe only ever runs
         # server-side in this pipeline).
         self.latest_angle: float | None = None
-        # Short state-change-triggered text cue + a monotonically increasing
-        # sequence number. The seq number (not the text) is what callers
-        # should diff against to detect "a new cue just fired" — two
-        # different reps can legitimately produce the same cue text back to
-        # back ("Good", "Good"), and a text-only diff would silently drop
-        # the second one.
-        self.latest_cue: str | None = None
-        self.cue_seq: int = 0
-
-    def _emit_cue(self, cue: str) -> None:
-        self.latest_cue = cue
-        self.cue_seq += 1
+        # Rep-quality cue channel ("Good"/"Extend further"/"Slow down") —
+        # see CueChannel's docstring for why this is its own instance rather
+        # than a hand-written text/seq pair.
+        self.cue = CueChannel()
 
     @property
     def range_of_motion(self) -> float:
@@ -931,6 +1013,19 @@ class _CandidateLegTrack:
     def any_rep_inhibited(self) -> bool:
         return any(r["is_inhibited"] for r in self.reps)
 
+    def observe_settling_angle(self, angle: float) -> None:
+        """
+        Call during the live settling grace period instead of push_frame —
+        feeds ONLY the deficit tracker's baseline-calibration (see
+        ExtensionDeficitTracker.observe_baseline), without running rep-
+        detection/velocity/AMI logic. See that method's docstring for why
+        this exists: without it, the rep-acceptance floor was seeded
+        entirely from whatever the first post-settling frame showed.
+        """
+        if np.isnan(angle):
+            return
+        self.deficit_tracker.observe_baseline(angle)
+
     def push_frame(self, angle: float, timestamp: float) -> dict:
         self.min_angle_seen = min(self.min_angle_seen, angle)
         self.max_angle_seen = max(self.max_angle_seen, angle)
@@ -961,7 +1056,7 @@ class _CandidateLegTrack:
                 # threshold is first crossed — not every frame it stays
                 # true, since a cue that re-fires every frame would just
                 # spam the voice feedback.
-                self._emit_cue("Slow down")
+                self.cue.emit("Slow down")
 
         peak_angle, deficit, completed_eccentric_s = self.deficit_tracker.check_for_peak(
             angle, current_velocity, timestamp
@@ -990,9 +1085,9 @@ class _CandidateLegTrack:
             # feedback for this exercise; anything else is a clean rep.
             if not self._current_rep_inhibited:
                 if deficit is not None and deficit > 15.0:
-                    self._emit_cue("Extend further")
+                    self.cue.emit("Extend further")
                 else:
-                    self._emit_cue("Good")
+                    self.cue.emit("Good")
             self._current_rep_peak_velocity = 0.0
             self._current_rep_inhibited = False
             self._consecutive_choppy_frames = 0
@@ -1012,7 +1107,7 @@ class _CandidateLegTrack:
             # which played as a jarring back-to-back repeat once voice cues
             # were changed to queue instead of cancel each other.
             if completed_eccentric_s < self.LIVE_CUE_FAST_DESCENT_S and not self.reps[-1]["is_inhibited"]:
-                self._emit_cue("Slow down")
+                self.cue.emit("Slow down")
 
         return {
             "angle": round(angle, 1),
@@ -1057,17 +1152,17 @@ class RehabSession:
         # can detect the transition INTO "poor" (see that method) rather than
         # re-firing the cue on every frame the level stays poor.
         self._last_alignment_level = None
-        # Camera-alignment cue lives in its OWN channel, separate from each
-        # leg track's rep-quality cue (latest_cue/cue_seq). They used to
-        # share one slot, which meant a rep-quality cue firing shortly after
-        # an alignment cue would silently overwrite it before the frontend
-        # ever polled it — since rep events happen more often than alignment
-        # transitions, "Slow down"/"Good" would almost always win the race
-        # and the camera-angle warning would go unseen and unheard, even
-        # though it fired correctly internally. Splitting the channels means
-        # neither can clobber the other.
-        self._alignment_cue_text = None
-        self._alignment_cue_seq = 0
+        # Camera-alignment cue lives in its OWN CueChannel, separate from
+        # each leg track's rep-quality cue channel. They used to share one
+        # hand-written text/seq slot, which meant a rep-quality cue firing
+        # shortly after an alignment cue would silently overwrite it before
+        # the frontend ever polled it — since rep events happen more often
+        # than alignment transitions, "Slow down"/"Good" would almost always
+        # win the race and the camera-angle warning would go unseen and
+        # unheard, even though it fired correctly internally. See
+        # CueChannel's docstring for why this is a reusable class rather
+        # than a second hand-duplicated field pair.
+        self.alignment_cue = CueChannel()
         # Wall-clock time.time() of the first live frame seen since the
         # current recording started — set lazily by is_settling() below, not
         # here, since __init__/reset happens before the camera necessarily
@@ -1090,10 +1185,7 @@ class RehabSession:
         self._frames_with_pose = 0
         self._last_alignment_level = None
         self._live_recording_started_at = None
-        self._alignment_cue_text = None
-        self._alignment_cue_seq = 0
-        # See _display_side() below.
-        self._live_display_side = None
+        self.alignment_cue = CueChannel()
 
     def is_settling(self, now: float) -> bool:
         """
@@ -1164,6 +1256,30 @@ class RehabSession:
         active_side = self._decide_tracked_landmark_side()
         return frame_results.get(active_side, {})
 
+    def observe_settling_frame(self, pose_landmarks, frame_w: int, frame_h: int) -> None:
+        """
+        Call during the live settling grace period instead of process_frame
+        — feeds both candidates' baseline angle calibration (see
+        _CandidateLegTrack.observe_settling_angle /
+        ExtensionDeficitTracker.observe_baseline) without running rep-
+        detection. Mirrors process_frame's landmark extraction but skips
+        push_frame's full pipeline, since rep-detection is deliberately
+        suppressed during settling (see is_settling/LIVE_SETUP_GRACE_PERIOD_S)
+        — this only calibrates the "what does this person's resting bent
+        position look like" baseline so it's already accurate by the time
+        rep-detection begins, instead of being seeded from whatever the
+        first post-settling frame happens to show.
+        """
+        side = self._active_side()
+        if side is None or pose_landmarks is None:
+            return
+        for candidate in ("left", "right"):
+            hip, knee, ankle = extract_hip_knee_ankle(pose_landmarks, candidate, frame_w, frame_h)
+            angle = VectorGeometryEngine.calculate_knee_angle(hip, knee, ankle)
+            if np.isnan(angle):
+                continue
+            self._candidates[candidate].observe_settling_angle(angle)
+
     # Levels that should trigger the live "Check your camera angle" cue.
     # Originally this only fired on "poor" — but CameraAlignmentChecker has
     # THREE tiers (good/caution/poor), and the post-session ClipSummary
@@ -1182,9 +1298,9 @@ class RehabSession:
         Call once per frame, live-stream path only, right after pushing the
         frame into _alignment_checker. Detects the transition INTO caution/
         poor alignment (see _ALIGNMENT_CUE_LEVELS) and emits a cue on this
-        session's OWN alignment-cue channel (_alignment_cue_text/_seq) — NOT
-        the per-leg track's rep-quality cue channel. They used to share one
-        slot, which meant a rep-quality cue firing shortly afterward would
+        session's OWN alignment_cue CueChannel — NOT the per-leg track's
+        rep-quality cue channel. They used to share one slot, which meant a
+        rep-quality cue firing shortly afterward would
         silently overwrite the alignment cue before the frontend ever polled
         it; since rep events happen more often than alignment transitions,
         this made the camera-angle warning nearly impossible to actually see
@@ -1202,8 +1318,7 @@ class RehabSession:
             return
         level = self._alignment_checker.recent_level()
         if level in self._ALIGNMENT_CUE_LEVELS and self._last_alignment_level not in self._ALIGNMENT_CUE_LEVELS:
-            self._alignment_cue_text = "Check your camera angle"
-            self._alignment_cue_seq += 1
+            self.alignment_cue.emit("Check your camera angle")
         self._last_alignment_level = level
 
     def live_status(self) -> dict:
@@ -1215,7 +1330,7 @@ class RehabSession:
         frontend to see this mid-session. Safe to call from both the video
         frame loop (to draw the overlay) and HTTP polling concurrently,
         since it only reads state — all cue *detection* happens where the
-        underlying event occurs (see _emit_cue call sites and
+        underlying event occurs (see CueChannel.emit call sites and
         note_alignment_frame above), not here. Deliberately movement-agnostic
         (generic "angle" / "target_range" / "cue" fields, plus a "movement"
         tag) so future movements beyond knee extension can reuse this same
@@ -1250,6 +1365,16 @@ class RehabSession:
         if observed_min == float("inf"):
             observed_min = track.latest_angle if track.latest_angle is not None else 90.0
         gauge_low = round(observed_min + ExtensionDeficitTracker.MIN_PEAK_MARGIN_DEG, 1)
+        # Clamp below the target: for a limited-mobility patient whose
+        # observed minimum sits high enough (>= 135 here), gauge_low could
+        # reach or exceed IDEAL_FULL_EXTENSION_DEG, inverting the range
+        # (lo >= hi). The frontend's classifyLiveRom divides by (hi - lo),
+        # so an inverted/zero range produced a nonsensical percentage that
+        # clamped to 1.0 — showing a misleadingly "full green, in target"
+        # gauge for what could actually be a badly short rep. A 1-degree
+        # gap keeps the range non-degenerate without materially changing
+        # the gauge's meaning for anyone not already at this extreme.
+        gauge_low = min(gauge_low, ExtensionDeficitTracker.IDEAL_FULL_EXTENSION_DEG - 1.0)
 
         return {
             "active": True,
@@ -1268,13 +1393,13 @@ class RehabSession:
             # exactly the "random cues while positioning" problem this grace
             # period exists to prevent.
             "alignment": "unknown" if settling else alignment_level,
-            "cue": None if settling else track.latest_cue,
-            "cue_seq": track.cue_seq,
+            "cue": None if settling else track.cue.text,
+            "cue_seq": track.cue.seq,
             # Independent channel from cue/cue_seq above — see
             # note_alignment_frame's docstring for why this can't share a
             # slot with the rep-quality cue.
-            "alignment_cue": None if settling else self._alignment_cue_text,
-            "alignment_cue_seq": self._alignment_cue_seq,
+            "alignment_cue": None if settling else self.alignment_cue.text,
+            "alignment_cue_seq": self.alignment_cue.seq,
         }
 
     def finalize_recording(self):
@@ -1455,28 +1580,47 @@ def _mjpeg_generator():
             if not ret:
                 break
 
+            # Bind the module-level global to a local ONCE per frame, rather
+            # than re-reading `_session` on every statement below. With
+            # threaded=True (needed so /api/rehab/live-status stays
+            # responsive during this long-lived stream), a concurrent
+            # /api/rehab/reset can reassign the global mid-iteration —
+            # without this local binding, different statements in the same
+            # frame could silently read/write two different RehabSession
+            # instances (e.g. alignment data written to the old session,
+            # rep/state data written to a new one). Binding once means this
+            # frame is internally consistent even if a reset lands right
+            # after; the NEXT frame just picks up the new session cleanly.
+            session = _session
+
             h, w = frame.shape[:2]
             image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = _pose_model.process(image_rgb)
 
             frame_result = {}
-            _session._frames_processed += 1
+            session._frames_processed += 1
             if results.pose_landmarks:
-                _session._frames_with_pose += 1
+                session._frames_with_pose += 1
                 now = time.time()
                 # Always feed the alignment/trunk checkers so they have real
                 # data warmed up by the time the setup grace period ends —
                 # but only run rep-tracking and alignment CUEING once the
                 # patient has actually had time to get positioned. See
                 # RehabSession.is_settling / LIVE_SETUP_GRACE_PERIOD_S.
-                _session._alignment_checker.push_frame(results.pose_landmarks)
-                _session._trunk_checker.push_frame(results.pose_landmarks)
-                if _session._active_side() is not None and not _session.is_settling(now):
-                    _session.note_alignment_frame()
-                    frame_result = _session.process_frame(results.pose_landmarks, w, h, now)
+                session._alignment_checker.push_frame(results.pose_landmarks)
+                session._trunk_checker.push_frame(results.pose_landmarks)
+                if session._active_side() is not None:
+                    if not session.is_settling(now):
+                        session.note_alignment_frame()
+                        frame_result = session.process_frame(results.pose_landmarks, w, h, now)
+                    else:
+                        # Still settling — calibrate the rep-acceptance
+                        # baseline from real frames instead of leaving it
+                        # entirely unseeded (see observe_settling_frame).
+                        session.observe_settling_frame(results.pose_landmarks, w, h)
                 mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-            frame = _draw_overlay(frame, frame_result, _session.state_machine.state, _session.live_status())
+            frame = _draw_overlay(frame, frame_result, session.state_machine.state, session.live_status())
 
             ok, jpeg = cv2.imencode(".jpg", frame)
             if not ok:
