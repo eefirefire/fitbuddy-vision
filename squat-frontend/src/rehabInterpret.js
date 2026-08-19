@@ -236,6 +236,23 @@ export function classifyRepTrend(reps) {
   }
 }
 
+// Drives the live ROM gauge during an active recording. Deliberately generic
+// (angle + a [min, max] target range, both supplied by the backend's
+// /live-status payload) rather than knee-extension-specific, so a future
+// movement (e.g. sit-to-stand) can reuse this same gauge component just by
+// reporting its own target_range — no gauge-side changes needed.
+export function classifyLiveRom(angle, targetRange) {
+  if (angle === null || angle === undefined || !targetRange) {
+    return { pct: 0, color: INFO, label: '—' }
+  }
+  const [lo, hi] = targetRange
+  const pct = Math.max(0, Math.min(1, (angle - lo) / (hi - lo)))
+  let color = BAD
+  if (pct >= 0.9) color = GOOD
+  else if (pct >= 0.6) color = WARN
+  return { pct, color, label: `${Math.round(angle)}°` }
+}
+
 export function classifyLSI(pct) {
   if (pct >= 90) {
     return {

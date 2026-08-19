@@ -45,3 +45,19 @@ export async function getLiveClipSummary() {
   if (!res.ok) throw new Error(data.error || 'Could not fetch live clip summary.')
   return data
 }
+
+// Polled during an active live recording to drive the rep counter, voice
+// cues, and ROM gauge — see RehabSession.live_status in the backend for why
+// this is a separate endpoint from the MJPEG video stream. Swallows network
+// errors into `null` rather than throwing, since a single missed poll during
+// a live demo shouldn't interrupt the recording — the caller just tries
+// again on the next tick.
+export async function getLiveStatus() {
+  try {
+    const res = await fetch(`${REHAB_API_BASE}/api/rehab/live-status`, WITH_SESSION)
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}

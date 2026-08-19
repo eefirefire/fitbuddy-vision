@@ -470,6 +470,95 @@ body {
   align-items: center;
 }
 
+/* Live rehab session HUD — rep counter + ROM gauge shown alongside the live
+   camera feed. Deliberately large text throughout: this app's users are
+   mid-exercise and glancing at a laptop screen from a few feet away, not
+   reading closely. */
+.live-hud {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  background: rgba(126, 184, 212, 0.06);
+  border: 1px solid var(--border);
+}
+
+.live-hud-settling {
+  width: 100%;
+  text-align: center;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.live-hud-reps {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 84px;
+}
+
+.live-hud-reps-count {
+  font-size: 2.4rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+}
+
+.live-hud-reps-label {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  margin-top: 4px;
+}
+
+.live-hud-gauge {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rom-gauge-track {
+  width: 100%;
+  height: 14px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.rom-gauge-fill {
+  height: 100%;
+  border-radius: 7px;
+  transition: width 0.15s ease-out, background 0.2s ease-out;
+}
+
+.rom-gauge-label {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.live-hud-cue {
+  min-width: 150px;
+  text-align: right;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.live-hud-alignment-warning {
+  width: 100%;
+  text-align: center;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(224, 108, 117, 0.12);
+  border: 1px solid #e06c75;
+  color: #e06c75;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
 .ghost-btn {
   background: transparent;
   border: 1px solid var(--border);

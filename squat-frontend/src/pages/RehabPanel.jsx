@@ -1,12 +1,19 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { uploadRehabVideo, advanceRehabState, getRehabReport, resetRehabSession, getLiveClipSummary, REHAB_STREAM_URL } from '../rehabService'
+import { uploadRehabVideo, advanceRehabState, getRehabReport, resetRehabSession, getLiveClipSummary, getLiveStatus, REHAB_STREAM_URL } from '../rehabService'
 import { getCurrentUser, getCurrentIntake } from '../authService'
 import {
   classifyTrackingQuality, classifyExtensionDeficit,
   classifyMovementSpeed, classifyMuscleActivation, classifyLSI, classifyRepTrend,
-  classifyCameraAlignment, classifyTrunkCompliance, classifyEccentricPacing,
+  classifyCameraAlignment, classifyTrunkCompliance, classifyEccentricPacing, classifyLiveRom,
 } from '../rehabInterpret'
+
+// Live-status is polled rather than pushed (no websocket in this stack — see
+// Scripts/rehab_knee_extension.py's live_status()), so this just needs to be
+// fast enough to feel live without hammering the backend. 400ms keeps the
+// rep counter and gauge feeling responsive without meaningfully loading a
+// Flask dev server running alongside the MJPEG stream.
+const LIVE_STATUS_POLL_MS = 400
 
 const INTAKE_WARNING_COLOR = { red: '#e06c75', amber: '#e5a14a' }
 
@@ -39,7 +46,70 @@ export default function RehabPanel() {
   const [inputMode, setInputMode] = useState('upload') // 'upload' | 'live'
   const [liveStreaming, setLiveStreaming] = useState(false)
   const [streamKey, setStreamKey] = useState(0)
+  const [liveStatus, setLiveStatus] = useState(null)
+  const [voiceEnabled, setVoiceEnabled] = useState(true)
   const fileInputRef = useRef(null)
+  const lastSpokenCueSeqRef = useRef(0)
+  const lastSpokenAlignmentSeqRef = useRef(0)
+
+  // Poll the live-status endpoint while the camera is actually streaming —
+  // drives the rep counter, ROM gauge, and voice cues below. Stops cleanly
+  // whenever streaming ends so it never polls in the background.
+  useEffect(() => {
+    if (!liveStreaming) {
+      setLiveStatus(null)
+      return
+    }
+    let cancelled = false
+    const tick = async () => {
+      const data = await getLiveStatus()
+      if (!cancelled && data) setLiveStatus(data)
+    }
+    tick()
+    const id = setInterval(tick, LIVE_STATUS_POLL_MS)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [liveStreaming])
+
+  // Voice feedback — speaks only on a genuine state change (a new cue_seq
+  // from the backend), never on every poll tick, so it doesn't repeat the
+  // same phrase 2-3x a second. Web Speech API only: offline, no external
+  // service, matches the "works without reliable venue wifi" constraint.
+  useEffect(() => {
+    if (!voiceEnabled || !liveStatus?.active || !liveStatus.cue) return
+    if (liveStatus.cue_seq === lastSpokenCueSeqRef.current) return
+    lastSpokenCueSeqRef.current = liveStatus.cue_seq
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      // Deliberately NOT calling speechSynthesis.cancel() here. Each rep can
+      // legitimately fire two distinct cues moments apart — the peak-extension
+      // cue ("Good"/"Extend further") the instant you reach full extension,
+      // then the descent-timing cue ("Slow down") a beat later once the leg
+      // finishes lowering. cancel() was killing whichever utterance was still
+      // playing when the second cue arrived, so in practice "Good" almost
+      // never got heard — only the last cue of each rep did. The Web Speech
+      // API queues speak() calls by default, so both play back to back
+      // instead; the cue_seq dedup above already guarantees this only fires
+      // on genuinely new cues, so the queue never grows unbounded.
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(liveStatus.cue))
+    }
+  }, [liveStatus, voiceEnabled])
+
+  // Camera-alignment cue speaks on its OWN dedup channel (alignment_cue_seq,
+  // not cue_seq) — the backend keeps this entirely separate from the
+  // rep-quality cue above. They used to share one "current cue" slot, which
+  // meant a rep cue firing shortly after an alignment cue would silently
+  // overwrite it before this component ever saw it: rep events happen more
+  // often than alignment transitions, so "Slow down"/"Good" would almost
+  // always win the race and "Check your camera angle" would never actually
+  // get spoken, even though it fired correctly on the backend. Independent
+  // channels mean both can be heard.
+  useEffect(() => {
+    if (!voiceEnabled || !liveStatus?.active || !liveStatus.alignment_cue) return
+    if (liveStatus.alignment_cue_seq === lastSpokenAlignmentSeqRef.current) return
+    lastSpokenAlignmentSeqRef.current = liveStatus.alignment_cue_seq
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(liveStatus.alignment_cue))
+    }
+  }, [liveStatus, voiceEnabled])
 
   // Rehab mode handles real medical/biomechanical data, so it's gated behind
   // login + a completed pre-exercise intake — checked against the backend
@@ -137,6 +207,8 @@ export default function RehabPanel() {
 
   function handleStartCamera() {
     setStreamKey(k => k + 1) // cache-busts the <img> src so each Start gets a fresh stream connection
+    lastSpokenCueSeqRef.current = 0 // fresh recording — don't carry over a stale cue_seq from a previous session
+    lastSpokenAlignmentSeqRef.current = 0
     setLiveStreaming(true)
   }
 
@@ -251,8 +323,12 @@ export default function RehabPanel() {
           liveStreaming ? (
             <div className="video-wrapper">
               <img key={streamKey} src={`${REHAB_STREAM_URL}?session=${streamKey}`} alt="Live camera feed with pose overlay" className="video-preview" />
+              <LiveStatusHud status={liveStatus} />
               <div className="video-actions">
                 <button className="ghost-btn" onClick={handleStopCamera}>Stop Camera</button>
+                <button className="ghost-btn" onClick={() => setVoiceEnabled(v => !v)}>
+                  {voiceEnabled ? '🔊 Voice On' : '🔇 Voice Off'}
+                </button>
                 <span className="cta-sub" style={{ paddingLeft: 0 }}>
                   Perform your reps, then click "Stop Camera" and "Next" when done.
                 </span>
@@ -331,6 +407,60 @@ export default function RehabPanel() {
 
         {report && <RehabReport data={report} />}
       </div>
+      </div>
+    </div>
+  )
+}
+
+// Live rep counter + ROM gauge + current cue, shown under the camera feed
+// while a live recording is in progress. The video overlay (drawn
+// server-side) already shows the same rep count/cue burned into the pixels
+// as a stage-safe fallback with zero network dependency — this is the same
+// data surfaced as real DOM text so it's legible at a glance and can drive
+// the voice cues, which the video overlay can't.
+function LiveStatusHud({ status }) {
+  if (!status || !status.active) return null
+
+  // Backend holds off on rep-tracking/cues for a few seconds after the
+  // camera starts, so ordinary setup movement (sitting down, adjusting the
+  // camera) doesn't get mistaken for reps or trigger spurious cues — see
+  // RehabSession.is_settling in the backend. Show a plain "get ready"
+  // message instead of a counter/gauge that isn't tracking yet.
+  if (status.settling) {
+    return (
+      <div className="live-hud">
+        <span className="live-hud-settling">Get positioned — tracking starts in a moment…</span>
+      </div>
+    )
+  }
+
+  const rom = classifyLiveRom(status.angle, status.target_range)
+  // Shown PERSISTENTLY whenever alignment is currently caution/poor (the
+  // "alignment" field always reflects the current recent-window reading),
+  // not just at the moment the one-shot alignment_cue transition fires —
+  // matches the video overlay's behavior so it stays visible for as long as
+  // the camera is actually off-angle, rather than flashing once.
+  const misaligned = status.alignment === 'caution' || status.alignment === 'poor'
+
+  return (
+    <div className="live-hud" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+      {misaligned && (
+        <div className="live-hud-alignment-warning">⚠ Check your camera angle</div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 20 }}>
+        <div className="live-hud-reps">
+          <span className="live-hud-reps-count">{status.rep_count ?? 0}</span>
+          <span className="live-hud-reps-label">REPS</span>
+        </div>
+        <div className="live-hud-gauge">
+          <div className="rom-gauge-track">
+            <div className="rom-gauge-fill" style={{ width: `${rom.pct * 100}%`, background: rom.color }} />
+          </div>
+          <span className="rom-gauge-label" style={{ color: rom.color }}>{rom.label}</span>
+        </div>
+        {status.cue && (
+          <span className="live-hud-cue" style={{ color: 'var(--text-primary)' }}>{status.cue}</span>
+        )}
       </div>
     </div>
   )
