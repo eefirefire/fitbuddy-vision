@@ -34,7 +34,7 @@ Tested against OnlineProtractor.com (digital goniometer) across 17 knee-extensio
 
 Off-angle placement roughly doubles error due to 3D-to-2D perspective foreshortening. The built-in `CameraAlignmentChecker` detects this in real time and prompts the user to correct their setup.
 
-Raw data and chart generation: `eda/Valdiation/`
+Raw data and chart generation: `eda/Validation/`
 
 ---
 
@@ -96,7 +96,7 @@ squat-frontend/
     Intake.jsx              — pre-exercise safety intake
 
 eda/
-  Valdiation/               — raw validation data, chart generation scripts
+  Validation/               — raw validation data, chart generation scripts
 ```
 
 ---

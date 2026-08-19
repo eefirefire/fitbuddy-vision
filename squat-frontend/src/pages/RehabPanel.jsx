@@ -51,6 +51,7 @@ export default function RehabPanel() {
   const fileInputRef = useRef(null)
   const lastSpokenCueSeqRef = useRef(0)
   const lastSpokenAlignmentSeqRef = useRef(0)
+  const previousStateRef = useRef(null)
 
   // Poll the live-status endpoint while the camera is actually streaming —
   // drives the rep counter, ROM gauge, and voice cues below. Stops cleanly
@@ -110,6 +111,29 @@ export default function RehabPanel() {
       window.speechSynthesis.speak(new SpeechSynthesisUtterance(liveStatus.alignment_cue))
     }
   }, [liveStatus, voiceEnabled])
+
+  // Speaks each state's hint text (STATE_COPY[state].hint) aloud on every
+  // real state transition — most useful for STATE_PROMPT_SWITCH ("turn
+  // around so your right leg faces the camera"), so there's no need to walk
+  // back to the laptop just to find out what to do next. Reuses the same
+  // Web Speech API approach as the rep/alignment cues above. Skips the very
+  // first render (previousStateRef starts null) so it only announces actual
+  // transitions, not the initial "Select Left Leg" the instant the page
+  // loads — and doesn't re-fire just because voiceEnabled was toggled while
+  // sitting on the same state.
+  useEffect(() => {
+    if (previousStateRef.current === null) {
+      previousStateRef.current = state
+      return
+    }
+    if (previousStateRef.current === state) return
+    previousStateRef.current = state
+    if (!voiceEnabled) return
+    const hint = STATE_COPY[state]?.hint
+    if (hint && typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(hint))
+    }
+  }, [state, voiceEnabled])
 
   // Rehab mode handles real medical/biomechanical data, so it's gated behind
   // login + a completed pre-exercise intake — checked against the backend
@@ -287,7 +311,7 @@ export default function RehabPanel() {
         </div>
       )}
 
-      <div className="dash-grid">
+      <div className={`dash-grid ${canRecord ? 'is-recording' : ''}`}>
       {/* Left: video input panel — upload a clip, or stream straight from the camera */}
       <div className="dash-card video-panel">
         <div className="panel-label">REHAB CLIP INPUT</div>

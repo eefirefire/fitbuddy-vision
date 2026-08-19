@@ -407,6 +407,14 @@ body {
   gap: 20px;
 }
 
+/* While a rehab RECORD state is active, the camera feed is what actually
+   matters moment-to-moment — the session panel (state copy, Next/Report/
+   Reset buttons) is only glanced at occasionally, so it shrinks to a thin
+   strip and the video gets the room. */
+.dash-grid.is-recording {
+  grid-template-columns: 3fr 1fr;
+}
+
 .dash-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -462,6 +470,13 @@ body {
   flex: 1;
   max-height: 340px;
   object-fit: contain;
+}
+
+/* Matches .dash-grid.is-recording above -- once the video panel actually
+   has the width to use, let the feed grow taller too instead of staying
+   capped at the same small height. */
+.dash-grid.is-recording .video-preview {
+  max-height: 640px;
 }
 
 .video-actions {
@@ -852,7 +867,8 @@ body {
 
   .hero-right { display: none; }
 
-  .dash-grid {
+  .dash-grid,
+  .dash-grid.is-recording {
     grid-template-columns: 1fr;
   }
 
