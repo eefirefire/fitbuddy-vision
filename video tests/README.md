@@ -19,6 +19,15 @@ meaningful. That's expected on those three, not a bug.
 Before trusting any real clinical validation beyond spot-checking, retest
 against footage of an actual patient/volunteer on the real target hardware.
 
+## Voice-cue coverage (all 4, on real seated knee-extension footage)
+
+| Cue | Verified on | How |
+|---|---|---|
+| "Good" | `seated_knee_extension_real.mp4` | Live pipeline + voice, 2 independent runs |
+| "Slow down" | both real seated-extension clips | Live pipeline + voice, both AMI-stutter and fast-descent triggers |
+| "Check your camera angle" | `seated_knee_extension_band_vertical.mp4` | Live pipeline + voice, fired on 2 genuine alignment transitions (not spam) |
+| "Extend further" | direct production-code instant capture (see git history) | Confirmed at the exact commit instant; in every real casual clip tested so far, a short rep also correlates with either a stutter or a fast drop, so "Extend further" gets superseded a moment later by "Slow down" before it would be spoken — that's the cue-priority system working as intended, not a bug. Still haven't found real footage where it survives as the *final* spoken cue. |
+
 ## How to run one
 
 Point the backend at a clip instead of a live webcam:
@@ -63,6 +72,21 @@ Confirms (verified via real UI clicks, not just API calls):
   Live Camera → Start Camera → (reps happen) → Stop Camera → coherent
   ClipSummary with real, specific feedback (trunk sway, descent pacing).
 - Zero browser console errors across the whole flow.
+
+### `seated_knee_extension_band_vertical.mp4`
+Source: "Seated Knee Extension Exercise with Resistance Band" by LifeStrength
+Physical Therapy (YouTube Shorts, ~50s, downloaded via yt-dlp for local
+testing only). Filmed vertically/frontally on a phone (typical for a
+Shorts-format clip) — genuinely off-angle, unlike the clip above.
+Confirms (verified via real UI clicks + voice interception):
+- **`camera_alignment` correctly reads `"poor"`** on real footage of this
+  exact exercise (ratio 0.649, well past the poor threshold).
+- **"Check your camera angle"** cue fires audibly through the real live
+  pipeline, twice, on genuine transitions as the person's position shifted
+  during the exercise (~13s apart — not spam).
+- Rep counter and "Good"/"Slow down" cues continue working correctly
+  alongside the alignment cue firing (4 reps counted, no cross-channel
+  interference).
 
 ### `rep_counter_good_and_slowdown.mp4`
 Source: a real, ~49s multi-rep squat clip with clean, controlled reps.
