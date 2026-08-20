@@ -52,9 +52,17 @@ export async function getLiveClipSummary() {
 // errors into `null` rather than throwing, since a single missed poll during
 // a live demo shouldn't interrupt the recording — the caller just tries
 // again on the next tick.
-export async function getLiveStatus() {
+//
+// sinceCueSeq/sinceAlignmentSeq: pass the caller's last-seen sequence
+// numbers so the response's cue_pending/alignment_cue_pending include every
+// cue emitted since the last poll, not just whichever was current — two
+// cues in the same category can legitimately fire within one poll interval
+// (e.g. "Extend further" at peak-commit, then "Slow down" moments later),
+// and without this the first one was silently never seen or spoken.
+export async function getLiveStatus(sinceCueSeq = 0, sinceAlignmentSeq = 0) {
   try {
-    const res = await fetch(`${REHAB_API_BASE}/api/rehab/live-status`, WITH_SESSION)
+    const url = `${REHAB_API_BASE}/api/rehab/live-status?since_cue_seq=${sinceCueSeq}&since_alignment_seq=${sinceAlignmentSeq}`
+    const res = await fetch(url, WITH_SESSION)
     if (!res.ok) return null
     return await res.json()
   } catch {

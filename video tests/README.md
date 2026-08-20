@@ -26,7 +26,21 @@ against footage of an actual patient/volunteer on the real target hardware.
 | "Good" | `seated_knee_extension_real.mp4` | Live pipeline + voice, 2 independent runs |
 | "Slow down" | both real seated-extension clips | Live pipeline + voice, both AMI-stutter and fast-descent triggers |
 | "Check your camera angle" | `seated_knee_extension_band_vertical.mp4` | Live pipeline + voice, fired on 2 genuine alignment transitions (not spam) |
-| "Extend further" | direct production-code instant capture (see git history) | Confirmed at the exact commit instant; in every real casual clip tested so far, a short rep also correlates with either a stutter or a fast drop, so "Extend further" gets superseded a moment later by "Slow down" before it would be spoken — that's the cue-priority system working as intended, not a bug. Still haven't found real footage where it survives as the *final* spoken cue. |
+| "Extend further" | `seated_knee_extension_band_vertical.mp4` | Live pipeline + voice, genuinely spoken twice in one real session (see below) |
+
+**Fixed:** cues used to live in a single-slot `{text, seq}` per channel, so
+when a rep earned two DIFFERENT cues close together (e.g. "Extend further"
+at peak-commit, then "Slow down" moments later once the descent was
+measured), the second silently overwrote the first before the frontend's
+400ms poll ever saw it — "Extend further" fired correctly on the backend
+but was never actually heard. `CueChannel` now keeps a short bounded
+history and exposes `cue_pending`/`alignment_cue_pending` (everything since
+the client's last-seen seq, oldest first) alongside the existing single
+"current" value; the frontend drains and speaks all of them instead of only
+the latest. Verified end-to-end: a real session on this clip produced the
+literal spoken sequence `Extend further → Slow down → Good → Slow down →
+Check your camera angle → Slow down → Good → Extend further`, both
+"Extend further" occurrences included.
 
 ## How to run one
 

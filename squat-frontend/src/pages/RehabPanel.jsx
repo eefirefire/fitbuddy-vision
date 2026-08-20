@@ -63,7 +63,7 @@ export default function RehabPanel() {
     }
     let cancelled = false
     const tick = async () => {
-      const data = await getLiveStatus()
+      const data = await getLiveStatus(lastSpokenCueSeqRef.current, lastSpokenAlignmentSeqRef.current)
       if (!cancelled && data) setLiveStatus(data)
     }
     tick()
@@ -71,44 +71,48 @@ export default function RehabPanel() {
     return () => { cancelled = true; clearInterval(id) }
   }, [liveStreaming])
 
-  // Voice feedback — speaks only on a genuine state change (a new cue_seq
-  // from the backend), never on every poll tick, so it doesn't repeat the
-  // same phrase 2-3x a second. Web Speech API only: offline, no external
-  // service, matches the "works without reliable venue wifi" constraint.
+  // Voice feedback — speaks every cue in cue_pending since our last-seen
+  // seq, not just liveStatus.cue (the single "current" value). Two cues in
+  // this category can legitimately fire within one poll interval — e.g.
+  // "Extend further" at peak-commit, then "Slow down" moments later once
+  // the descent is measured — and a single-value comparison only ever saw
+  // whichever was current at poll time, so the first was silently never
+  // spoken even though it fired correctly on the backend. cue_pending
+  // (see rehabService.getLiveStatus) carries every emission since the seq
+  // we last sent the server, so nothing in between gets lost.
+  // Web Speech API only: offline, no external service, matches the "works
+  // without reliable venue wifi" constraint.
   useEffect(() => {
-    if (!voiceEnabled || !liveStatus?.active || !liveStatus.cue) return
-    if (liveStatus.cue_seq === lastSpokenCueSeqRef.current) return
-    lastSpokenCueSeqRef.current = liveStatus.cue_seq
-    if (typeof window !== 'undefined' && window.speechSynthesis) {
-      // Deliberately NOT calling speechSynthesis.cancel() here. Each rep can
-      // legitimately fire two distinct cues moments apart — the peak-extension
-      // cue ("Good"/"Extend further") the instant you reach full extension,
-      // then the descent-timing cue ("Slow down") a beat later once the leg
-      // finishes lowering. cancel() was killing whichever utterance was still
-      // playing when the second cue arrived, so in practice "Good" almost
-      // never got heard — only the last cue of each rep did. The Web Speech
-      // API queues speak() calls by default, so both play back to back
-      // instead; the cue_seq dedup above already guarantees this only fires
-      // on genuinely new cues, so the queue never grows unbounded.
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(liveStatus.cue))
+    if (!voiceEnabled || !liveStatus?.active || !liveStatus.cue_pending?.length) return
+    for (const { seq, text } of liveStatus.cue_pending) {
+      lastSpokenCueSeqRef.current = Math.max(lastSpokenCueSeqRef.current, seq)
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        // Deliberately NOT calling speechSynthesis.cancel() here — see the
+        // comment above about why cues need to queue, not interrupt each
+        // other. The Web Speech API queues speak() calls by default.
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(text))
+      }
     }
   }, [liveStatus, voiceEnabled])
 
-  // Camera-alignment cue speaks on its OWN dedup channel (alignment_cue_seq,
-  // not cue_seq) — the backend keeps this entirely separate from the
+  // Camera-alignment cue speaks on its OWN dedup channel (alignment_cue_pending,
+  // not cue_pending) — the backend keeps this entirely separate from the
   // rep-quality cue above. They used to share one "current cue" slot, which
   // meant a rep cue firing shortly after an alignment cue would silently
   // overwrite it before this component ever saw it: rep events happen more
   // often than alignment transitions, so "Slow down"/"Good" would almost
   // always win the race and "Check your camera angle" would never actually
   // get spoken, even though it fired correctly on the backend. Independent
-  // channels mean both can be heard.
+  // channels mean both can be heard; draining alignment_cue_pending (not
+  // just the single "current" value) means multiple alignment transitions
+  // within one poll interval all get spoken too.
   useEffect(() => {
-    if (!voiceEnabled || !liveStatus?.active || !liveStatus.alignment_cue) return
-    if (liveStatus.alignment_cue_seq === lastSpokenAlignmentSeqRef.current) return
-    lastSpokenAlignmentSeqRef.current = liveStatus.alignment_cue_seq
-    if (typeof window !== 'undefined' && window.speechSynthesis) {
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(liveStatus.alignment_cue))
+    if (!voiceEnabled || !liveStatus?.active || !liveStatus.alignment_cue_pending?.length) return
+    for (const { seq, text } of liveStatus.alignment_cue_pending) {
+      lastSpokenAlignmentSeqRef.current = Math.max(lastSpokenAlignmentSeqRef.current, seq)
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.speak(new SpeechSynthesisUtterance(text))
+      }
     }
   }, [liveStatus, voiceEnabled])
 

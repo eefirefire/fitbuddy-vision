@@ -889,12 +889,12 @@ class TrunkComplianceChecker:
 
 class CueChannel:
     """
-    A single (text, sequence-number) slot for a state-change-triggered cue.
-    emit() bumps the sequence number so callers can detect "a new cue just
-    fired" without relying on the text itself — two different events can
-    legitimately produce identical text back to back (e.g. two different
-    reps both earning "Good"), and a text-only diff would silently drop the
-    second one.
+    A (text, sequence-number) slot for a state-change-triggered cue, plus a
+    short recent HISTORY of emissions. emit() bumps the sequence number so
+    callers can detect "a new cue just fired" without relying on the text
+    itself — two different events can legitimately produce identical text
+    back to back (e.g. two different reps both earning "Good"), and a
+    text-only diff would silently drop the second one.
 
     Each cue CATEGORY (rep-quality, camera-alignment, ...) needs its own
     channel instance — sharing one slot across categories is exactly the bug
@@ -905,15 +905,41 @@ class CueChannel:
     to dodge that (which just reproduces the same clobbering risk for
     whichever THIRD cue category comes along next), each category gets its
     own CueChannel instance and they can never collide with each other.
+
+    Keeping only `text`/`seq` (the single latest emission) turned out to
+    have the SAME clobbering problem one level down: a single rep can
+    legitimately earn two DIFFERENT cues within one category in quick
+    succession — e.g. "Extend further" at the peak-commit instant, then
+    "Slow down" moments later once the descent is measured — both real,
+    both worth hearing, but close enough together (well under one 400ms
+    poll interval) that only the second ever survived to be seen or spoken.
+    `history` keeps the last few emissions so a poller can catch every cue
+    since it last checked, not just whichever was current at poll time.
     """
+
+    HISTORY_LIMIT = 10
 
     def __init__(self):
         self.text: str | None = None
         self.seq: int = 0
+        self.history: list[tuple[int, str]] = []
 
     def emit(self, text: str) -> None:
         self.text = text
         self.seq += 1
+        self.history.append((self.seq, text))
+        if len(self.history) > self.HISTORY_LIMIT:
+            self.history = self.history[-self.HISTORY_LIMIT:]
+
+    def pending_since(self, last_seen_seq: int) -> list[dict]:
+        """
+        Every emission with seq > last_seen_seq, oldest first — what a
+        poller should still deliver (e.g. speak) since it last checked.
+        Bounded by HISTORY_LIMIT: a caller that hasn't polled in longer than
+        that many emissions will miss the oldest ones rather than replay an
+        unbounded backlog, which is the right tradeoff for a live cue feed.
+        """
+        return [{"seq": seq, "text": text} for seq, text in self.history if seq > last_seen_seq]
 
 
 class _CandidateLegTrack:
@@ -1321,7 +1347,7 @@ class RehabSession:
             self.alignment_cue.emit("Check your camera angle")
         self._last_alignment_level = level
 
-    def live_status(self) -> dict:
+    def live_status(self, since_cue_seq: int = 0, since_alignment_seq: int = 0) -> dict:
         """
         Lightweight, pollable, side-effect-free snapshot of the in-progress
         recording, for the browser to drive things MediaPipe/OpenCV can't
@@ -1335,6 +1361,16 @@ class RehabSession:
         (generic "angle" / "target_range" / "cue" fields, plus a "movement"
         tag) so future movements beyond knee extension can reuse this same
         endpoint and the same frontend components without a payload redesign.
+
+        since_cue_seq / since_alignment_seq: the caller's last-seen sequence
+        numbers for each channel — used to fill cue_pending/
+        alignment_cue_pending with every emission the caller hasn't seen yet
+        (see CueChannel.pending_since), not just whichever text happens to
+        be current at poll time. Two cues in the same category can legitimately
+        fire within one poll interval (e.g. "Extend further" at peak-commit,
+        then "Slow down" moments later once the descent is measured) — without
+        this, only the second ever reached the frontend, so the first was
+        silently never seen or spoken even though it fired correctly.
         """
         if self._active_side() is None:
             return {"active": False, "state": self.state_machine.state.value}
@@ -1395,11 +1431,17 @@ class RehabSession:
             "alignment": "unknown" if settling else alignment_level,
             "cue": None if settling else track.cue.text,
             "cue_seq": track.cue.seq,
+            # Every emission since the caller's last-seen seq, oldest first
+            # — e.g. [{"seq": 3, "text": "Extend further"}, {"seq": 4, "text":
+            # "Slow down"}] if both fired since the last poll. Empty while
+            # settling, same as cue/alignment_cue above.
+            "cue_pending": [] if settling else track.cue.pending_since(since_cue_seq),
             # Independent channel from cue/cue_seq above — see
             # note_alignment_frame's docstring for why this can't share a
             # slot with the rep-quality cue.
             "alignment_cue": None if settling else self.alignment_cue.text,
             "alignment_cue_seq": self.alignment_cue.seq,
+            "alignment_cue_pending": [] if settling else self.alignment_cue.pending_since(since_alignment_seq),
         }
 
     def finalize_recording(self):
@@ -1737,8 +1779,15 @@ def live_status():
     the rep counter, voice cues, and ROM gauge in the browser — see
     RehabSession.live_status for why this exists as a separate channel from
     the MJPEG video stream.
+
+    ?since_cue_seq / ?since_alignment_seq: the frontend's last-seen sequence
+    numbers, so the response's cue_pending/alignment_cue_pending can include
+    every cue emitted since the last poll (see RehabSession.live_status /
+    CueChannel.pending_since) instead of just whichever was current.
     """
-    return jsonify(_session.live_status())
+    since_cue_seq = request.args.get("since_cue_seq", default=0, type=int)
+    since_alignment_seq = request.args.get("since_alignment_seq", default=0, type=int)
+    return jsonify(_session.live_status(since_cue_seq, since_alignment_seq))
 
 
 @app.route("/api/rehab/clip-summary", methods=["POST"])
