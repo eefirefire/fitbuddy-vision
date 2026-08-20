@@ -7,18 +7,17 @@ instead of synthetic angle arrays. Built while debugging the Tier 1 live
 rep-counter/voice-cue feature; kept here so the same scenarios can be
 re-checked after future changes without re-hunting for source clips.
 
-**Important caveat:** none of these are real seated knee-extension footage —
-this app has no such clips available, and there's no camera here to record
-one. These are squat videos, used purely as stand-ins for "a real person
-moving in front of a camera" to exercise the mechanics (rep detection, cue
-triggering, state transitions). Two consequences:
-- `camera_alignment` will correctly read `"poor"` on all of these, since
-  none are a proper side-on seated shot — that's expected, not a bug.
-- Peak-angle/deficit numbers exercise the code paths correctly (the angle
-  math is exercise-agnostic) but aren't clinically meaningful readings.
+**Update:** `seated_knee_extension_real.mp4` (added later) IS real footage of
+this exact exercise, properly side-on — use that one first. The squat clips
+below were stand-ins used before a real clip was available; they're kept
+because they still exercise the mechanics fine (rep detection, cue
+triggering, state transitions — the angle math is exercise-agnostic), but
+`camera_alignment` will correctly read `"poor"` on all of them since none are
+a proper side-on shot, and their peak-angle/deficit numbers aren't clinically
+meaningful. That's expected on those three, not a bug.
 
-Before trusting any real clinical validation, retest against actual seated
-knee-extension footage of a real patient/volunteer.
+Before trusting any real clinical validation beyond spot-checking, retest
+against footage of an actual patient/volunteer on the real target hardware.
 
 ## How to run one
 
@@ -42,6 +41,28 @@ cleanly, which causes exactly the kind of inconsistent/"random" behavior
 this suite was built to catch.
 
 ## Clips
+
+### `seated_knee_extension_real.mp4`
+Source: "Seated Knee Extension (LAQ)" by Ask Doctor Jo (YouTube, ~26s,
+downloaded via yt-dlp for local testing only — not redistributed). This
+channel is already cited as reference material in this module's own code
+comments (see TrunkComplianceChecker), so it's a good match for what the
+pipeline was actually tuned against. **The best fixture in this folder** —
+genuine side-on seated knee extension, not a stand-in.
+Confirms (verified via real UI clicks, not just API calls):
+- Rep counter correctly detects 3 real reps.
+- **`camera_alignment` correctly reads `"good"`** — the first fixture where
+  this could actually be tested, since the squat clips below are all
+  structurally off-angle. No alignment cue false-fired the entire session
+  (`alignment_cue_seq` stayed 0).
+- State-transition voice hint fires on a real "Next" click ("Perform your
+  seated knee extension reps now.").
+- Rep-quality voice cues fire in a sensible sequence tied to real reps
+  ("Slow down" → "Good" → "Slow down"), no duplicates/spam.
+- Full session flow works end-to-end through real button clicks: Next →
+  Live Camera → Start Camera → (reps happen) → Stop Camera → coherent
+  ClipSummary with real, specific feedback (trunk sway, descent pacing).
+- Zero browser console errors across the whole flow.
 
 ### `rep_counter_good_and_slowdown.mp4`
 Source: a real, ~49s multi-rep squat clip with clean, controlled reps.
