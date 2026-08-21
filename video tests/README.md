@@ -1,11 +1,32 @@
 # Video Tests
 
-Real, unscripted video clips used to regression-test the live rehab pipeline
-(`Scripts/rehab_knee_extension.py`) end-to-end — real MediaPipe pose
-detection, real human movement, run through the actual live-camera code path
-instead of synthetic angle arrays. Built while debugging the Tier 1 live
-rep-counter/voice-cue feature; kept here so the same scenarios can be
-re-checked after future changes without re-hunting for source clips.
+Real, unscripted video clips used to regression-test the live rehab
+pipelines (`Scripts/rehab_knee_extension.py` and `Scripts/
+rehab_sit_to_stand.py`) end-to-end — real MediaPipe pose detection, real
+human movement, run through the actual pipeline code instead of synthetic
+angle arrays. Built while debugging the Tier 1 live rep-counter/voice-cue
+feature; kept here so the same scenarios can be re-checked after future
+changes without re-hunting for source clips.
+
+### `sit_to_stand_test.mp4`
+Source: "30-Second Sit-to-Stand Test | Muscle Power Assessment in Elderly"
+(YouTube, ~4min, downloaded via yt-dlp for local testing only). Run through
+`rehab_sit_to_stand.run_batch_validation()` directly (not the live UI —
+see that module):
+- 14 real reps detected across the full clip with zero crashes, no NaN
+  propagation, no negative deficits.
+- Hip and knee angles both extend together and land in a plausible range
+  (165-180 deg) for genuine full stands.
+- Two reps (angles ~90-100 deg) were correctly flagged as genuinely short
+  rather than silently averaged in with the rest — likely a different demo
+  segment in the source video, not a tracking failure.
+- **Calibration caveat, not a bug:** this source video is the timed
+  30-second MAX-REPS test, where fast/repeated motion is the *correct*
+  behavior — so most reps got flagged `is_descent_too_fast` against this
+  module's pacing thresholds. Those thresholds are intentionally tuned for
+  the OEP-style CONTROLLED single rep (the actual clinical context this
+  feature was built for), not the timed test. This video was used only to
+  validate the tracking geometry against real motion, not to tune pacing.
 
 **Update:** `seated_knee_extension_real.mp4` (added later) IS real footage of
 this exact exercise, properly side-on — use that one first. The squat clips
