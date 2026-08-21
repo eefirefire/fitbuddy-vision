@@ -28,6 +28,48 @@ see that module):
   feature was built for), not the timed test. This video was used only to
   validate the tracking geometry against real motion, not to tune pacing.
 
+### `sit_to_stand_controlled.mp4`
+Source: "Sit to Stand Strengthening Exercise" by Signature Medical Group /
+Dave Reddy (YouTube, ~4.5min, downloaded via yt-dlp for local testing only).
+A trainer demoing controlled reps with narration between them — closer to
+the actual OEP-style controlled pacing this module's thresholds are tuned
+for than the timed max-reps test above. Run through `run_batch_validation()`:
+- 6 "reps" detected. Reps 1-4 (standing_angle 155-172 deg) are plausible
+  genuine stands with correctly-clamped small deficits.
+- **Real limitation surfaced, not a crash:** reps 2-4 show implausibly long
+  `eccentric_duration_s` (97s, 34.5s, 13.28s) and got flagged `is_jerky`.
+  This is the trainer talking/gesturing between demo reps — small sustained
+  motion during a long pause gets picked up as part of the "descent" instead
+  of a new settled baseline, so the duration and jerk numbers for those reps
+  aren't clinically meaningful. A real single-patient session (stand, sit,
+  brief pause, repeat) won't have multi-minute narration gaps like this, but
+  it's a real edge case worth knowing about: if Dad talks or fidgets for a
+  long time mid-session, expect a noisy report on that rep, not a crash.
+- Reps 5-6 (standing_angle ~43-50 deg) are clearly not full stands — most
+  likely a different exercise demonstrated later in the same video, not a
+  tracking failure (both hip and knee angles agree with each other at that
+  low angle, which is what you'd expect from a real seated/bent position,
+  not sensor noise).
+- Zero crashes, no NaN propagation, across the full ~275s clip.
+
+### `sit_to_stand_walker.mp4`
+Source: "How to Sit Down and Stand Up with a Walker" by RegisteredNurseRN
+(YouTube, ~77s, downloaded via yt-dlp for local testing only). A nursing
+demo of the walker-assisted sit-to-stand transfer — relevant because
+walker use is common in this app's actual target population (older
+adults with fall risk) and wasn't tested before. Run through
+`run_batch_validation()`:
+- 2 reps detected. Rep 2 (standing_angle 167.3 deg) is a clean, plausible
+  full stand.
+- Rep 1 (standing_angle 52.8 deg, both hip and knee angles agreeing at
+  that low position) is real footage but not a full stand — likely an
+  earlier segment of the demo (seated/mid-transfer position), same
+  "different segment, not sensor noise" pattern as above.
+- No crash or landmark failure from the walker being held in both hands —
+  pose detection tracked hip/knee/shoulder normally despite the
+  assistive device. This is a genuinely useful data point for Sunday if
+  Dad uses any kind of support.
+
 **Update:** `seated_knee_extension_real.mp4` (added later) IS real footage of
 this exact exercise, properly side-on — use that one first. The squat clips
 below were stand-ins used before a real clip was available; they're kept
