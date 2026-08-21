@@ -138,6 +138,29 @@ def test_single_frame_outlier_does_not_corrupt_the_floor():
     )
 
 
+def test_implausible_low_reading_is_rejected_outright():
+    # Direct unit test of the rejection guard itself
+    # (_CandidateBodySideTrack.MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG /
+    # push_frame), isolated from the AMI classifier -- see the test below
+    # for the end-to-end version against a simulated real glitch.
+    track = _CandidateBodySideTrack()
+    track.transition_tracker.observe_baseline(95.0)  # settling calibrates a real seated baseline
+    track.finalize_settling()  # commits the calibrated baseline (median of settling samples)
+    track.push_frame(150.0, 150.0, 0.0)  # first real-tracking frame establishes observed_min
+    floor_before = track.transition_tracker._observed_min_angle
+
+    # A wildly implausible low reading (more than MAX_DRIFT_BELOW_SETTLED_
+    # BASELINE_DEG below the current floor) must be rejected outright, not
+    # merely clamped -- it should never reach observed_min at all. Uses a
+    # large dt so the (separate) velocity guard doesn't also fire here --
+    # this test targets the absolute-floor guard specifically.
+    result = track.push_frame(1.0, 1.0, 5.0)
+    assert result.get("rejected_implausible_low_angle") is True
+    assert track.transition_tracker._observed_min_angle == floor_before, (
+        "an implausible low reading still altered observed_min despite being rejected"
+    )
+
+
 def test_sustained_real_change_is_still_accepted():
     tracker = StandTransitionTracker()
     sequence = [95, 95, 95] + [80, 80, 80, 80, 80]
@@ -213,6 +236,7 @@ def test_settling_calibration_prevents_unreachable_floor():
     # baseline (hip/knee both ~95).
     for _ in range(5):
         track.observe_settling_angle(min(95, 96))
+    track.finalize_settling()  # commits the calibrated baseline
 
     # Settling ends with the person ALREADY mid-rise (95 -> 178), not at
     # their seated baseline -- the exact scenario that, without settling
@@ -263,3 +287,101 @@ def test_genuine_stutter_is_flagged_jerky():
     velocity = np.cumsum(acceleration) * 0.01
     result = AMIAnomalyClassifier.classify_motion(velocity, acceleration)
     assert result["is_jerky"] is True
+
+
+# ── Regression: a real still/resting pause must not fire "Slow down" ────────
+# Found by running rehab_sit_to_stand against a real ~4.5min video with long
+# (13-97s) narrated pauses between reps (sit_to_stand_controlled.mp4) --
+# AMIAnomalyClassifier is shape-only (acceleration sign flips), with no
+# amplitude floor, so sub-pixel MediaPipe landmark jitter on a person
+# standing still talking was enough to register as "jerky" and fire a false
+# "Slow down" cue for someone who wasn't moving at all.
+
+def test_resting_jitter_does_not_fire_slow_down():
+    track = _CandidateBodySideTrack()
+    t = 0.0
+    # Small (<1 deg) alternating jitter around a fixed standing angle, no
+    # real displacement -- simulates landmark noise while genuinely at rest.
+    jitter = [95.0, 95.4, 94.7, 95.3, 94.8, 95.2, 94.9, 95.1] * 15
+    for a in jitter:
+        track.push_frame(a, a, t)
+        t += 1 / 30
+    assert track.cue.text is None, f"resting jitter incorrectly fired a cue: {track.cue.text}"
+
+
+# ── Regression: a MediaPipe tracking-glitch spike must not corrupt the
+# permanent rep-detection floor ──────────────────────────────────────────
+# Found by running against real footage (sit_to_stand_controlled.mp4): a
+# multi-frame glitch swung the composite angle 172 -> 1.1 -> 162 degrees in
+# ~0.2s (implied velocities of 1000-3800+ deg/s), while MediaPipe reported
+# normal-to-high landmark visibility throughout -- a confidence-score gate
+# does not catch this. Because StandTransitionTracker._observed_min_angle
+# is a running minimum that never resets, one such spike would otherwise
+# permanently corrupt rep detection for the rest of the session: every
+# later sway/gesture during a real standing hold would clear the
+# now-artificially-low peak/rearm margins and register as a spurious rep.
+
+def test_implausible_glitch_spike_does_not_corrupt_observed_min():
+    track = _CandidateBodySideTrack()
+    t = 0.0
+    # Simulate the settling/calibration window a real session runs before
+    # rep tracking starts -- this is what establishes the anchor
+    # _CandidateBodySideTrack.MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG uses.
+    for _ in range(5):
+        track.transition_tracker.observe_baseline(95.0)
+    # Genuine rise to a real stand (95 -> 172), then hold near standing --
+    # matches the real footage pattern this regression is modeling.
+    for a in _ramp(95, 172, 15):
+        track.push_frame(a, a, t)
+        t += 1 / 30
+    for a in [172, 171, 173, 172]:
+        track.push_frame(a, a, t)
+        t += 1 / 30
+    floor_before_glitch = track.transition_tracker._observed_min_angle
+
+    # The glitch: a physically-impossible plunge to ~1 degree and back,
+    # all within a few 1/30s frames.
+    for a in [82.7, 38.7, 16.7, 1.8, 1.1, 3.9, 8.2, 122.8, 152.7]:
+        track.push_frame(a, a, t)
+        t += 1 / 30
+
+    # The floor is allowed to drift down by up to MAX_DRIFT_BELOW_SETTLED_
+    # BASELINE_DEG (that's the whole point of a bounded, not zero, margin --
+    # real per-person variation exists) but must NOT collapse anywhere near
+    # the glitch's actual ~1 degree values.
+    floor_after_glitch = track.transition_tracker._observed_min_angle
+    max_allowed_drop = _CandidateBodySideTrack.MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG
+    assert floor_after_glitch >= floor_before_glitch - max_allowed_drop, (
+        "a tracking-glitch spike corrupted the permanent rep-detection floor beyond "
+        f"the allowed drift: {floor_before_glitch} -> {floor_after_glitch}"
+    )
+
+    # Confirm the cascading symptom is also gone: a normal small sway while
+    # still standing (well above any real seated baseline) must NOT
+    # register as a brand new rep once the glitch has passed.
+    reps_before_sway = len(track.reps)
+    for a in [172, 160, 175, 165, 173]:
+        track.push_frame(a, a, t)
+        t += 1 / 30
+    assert len(track.reps) == reps_before_sway, (
+        "ordinary standing sway after a glitch was miscounted as a new rep"
+    )
+
+
+def test_genuine_slow_stutter_still_fires_slow_down():
+    # Same "three distinct mid-rise pauses" construction used in
+    # test_rehab_knee_extension.test_genuine_multi_pause_stutter_is_flagged_inhibited
+    # -- a real stop-start rise (multi-tenths-of-a-second holds, not
+    # frame-to-frame alternation) must still be caught after the motion
+    # floor is added, not just resting-still jitter.
+    t = np.linspace(0, 3.6, 108)
+    base = np.clip(95 + 85 * (t / 3.0), 95, 180)
+    stutter = base.copy()
+    for start, end in [(0.7, 1.1), (1.5, 1.9), (2.3, 2.7)]:
+        mask = (t >= start) & (t <= end)
+        stutter[mask] = stutter[mask][0]
+
+    track = _CandidateBodySideTrack()
+    for ts, a in zip(t, stutter):
+        track.push_frame(a, a, ts)
+    assert track.cue.text == "Slow down", f"a genuine stutter should still fire Slow down, got: {track.cue.text}"

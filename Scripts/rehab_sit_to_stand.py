@@ -343,6 +343,7 @@ class StandTransitionTracker:
         self._observed_min_angle = float("inf")
         self._recent_angles = deque(maxlen=self.MIN_ANGLE_MEDIAN_WINDOW)
         self._peak_timestamp = None
+        self._baseline_samples: list[float] = []
 
     def _update_observed_min(self, current_angle: float) -> None:
         self._recent_angles.append(current_angle)
@@ -352,12 +353,29 @@ class StandTransitionTracker:
     def observe_baseline(self, angle: float) -> None:
         """Call during the live settling grace period instead of
         check_for_peak — see RehabSitToStandSession.is_settling /
-        LIVE_SETUP_GRACE_PERIOD_S. Calibrates the seated baseline from real
-        frames before rep-detection begins, instead of seeding it from
-        whatever the first post-settling frame happens to show."""
+        LIVE_SETUP_GRACE_PERIOD_S. Accumulates samples for finalize_baseline
+        to summarize once settling ends -- does NOT feed _observed_min_angle
+        directly. A running MIN (what this used to do) is the least robust
+        statistic possible against a contaminated settling window: found
+        against real footage (sit_to_stand_controlled.mp4) that the video's
+        own opening ~0.3-0.5s reads a spurious ~18 degree low (camera
+        panning in / subject not yet framed) before settling into the
+        subject's real range -- a running min would permanently anchor the
+        entire session's rep-detection floor to that one bad artifact."""
         if np.isnan(angle):
             return
-        self._update_observed_min(angle)
+        self._baseline_samples.append(angle)
+
+    def finalize_baseline(self) -> None:
+        """Call exactly once, when settling ends and real rep tracking is
+        about to begin. Summarizes observe_baseline's accumulated samples
+        with a MEDIAN rather than a min -- robust to a handful of
+        contaminated opening frames, since it takes a majority of bad
+        samples (not just one) to meaningfully move a median. If settling
+        never ran (no samples), leaves _observed_min_angle at its default
+        (inf), preserving the old unbounded-fallback behavior."""
+        if self._baseline_samples:
+            self._observed_min_angle = float(np.median(self._baseline_samples))
 
     def check_for_peak(self, current_angle: float, timestamp: float = None):
         """
@@ -365,6 +383,11 @@ class StandTransitionTracker:
         three-way return shape and timing semantics as
         rehab_knee_extension.ExtensionDeficitTracker.check_for_peak; see
         that method's docstring for the full contract.
+
+        Callers are expected to have already screened out implausible
+        readings (see _CandidateBodySideTrack.push_frame's rejection guard)
+        — this method trusts current_angle at face value and has no
+        amplitude sanity-checking of its own.
         """
         self._update_observed_min(current_angle)
 
@@ -431,6 +454,25 @@ def extract_body_landmarks(pose_landmarks, side: str, frame_w: int, frame_h: int
         return (p.x * frame_w, p.y * frame_h)
 
     return to_xy(shoulder_lm), to_xy(hip_lm), to_xy(knee_lm), to_xy(ankle_lm)
+
+
+# Below this MediaPipe landmark visibility score, a joint reading is
+# rejected outright (fully absent/occluded landmark). Deliberately lenient:
+# checked against real footage (sit_to_stand_controlled.mp4) and found that
+# ankle visibility normally sits around 0.3-0.5 throughout most of that
+# video just from ordinary camera framing (feet near the frame edge), with
+# no meaningful dip during the actual tracking glitch this module's other
+# defense (MAX_PLAUSIBLE_VELOCITY_DEG_S, see _CandidateBodySideTrack) was
+# built to catch -- MediaPipe reported moderate-to-high confidence on every
+# landmark even while producing a physically impossible angle. So this gate
+# only screens out genuinely-absent detections, not the low-but-usable
+# confidence that's normal in real footage; it is not the primary defense.
+MIN_LANDMARK_VISIBILITY = 0.15
+
+
+def landmarks_confident(pose_landmarks, side: str) -> bool:
+    lm = pose_landmarks.landmark
+    return all(lm[l.value].visibility >= MIN_LANDMARK_VISIBILITY for l in _LANDMARK_SETS[side])
 
 
 class CameraAlignmentChecker:
@@ -524,12 +566,65 @@ class _CandidateBodySideTrack:
 
     SUSTAINED_FRAMES_REQUIRED = 5  # see rehab_knee_extension for derivation
 
+    # AMIAnomalyClassifier's oscillation-flip signal is shape-only, not
+    # amplitude-aware -- it was validated against short knee-extension clips
+    # where "between reps" was a brief cut, never a real held-still pause.
+    # Sit-to-stand sessions run this classifier continuously across an
+    # entire recording, INCLUDING long rest/talking pauses between reps
+    # (confirmed against real footage: sit_to_stand_controlled.mp4 has
+    # 13-97s gaps between reps where a trainer stands still narrating).
+    # During those gaps, sub-pixel MediaPipe landmark jitter on an otherwise
+    # motionless person still produces enough acceleration sign-flips to
+    # read as "jerky" after double differentiation, firing a false "Slow
+    # down" cue for someone who isn't moving at all. Every genuine rep
+    # across all three real test videos had a peak velocity of at least
+    # ~74 deg/s (the slowest observed full stand); this floor is set well
+    # below that and well above plausible landmark-jitter noise, so it
+    # gates jerky classification to windows with real physical motion
+    # without needing to touch the shared, already-validated classifier.
+    MIN_VELOCITY_FOR_JERKY_DEG_S = 20.0
+
+    # Above this implied RAW (unsmoothed) frame-to-frame velocity, a single
+    # reading is rejected outright and never reaches angle history, the AMI
+    # classifier, or StandTransitionTracker. Deliberately a backup defense,
+    # not the primary one -- MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG below is
+    # what actually bounds the real-world glitch this module was hardened
+    # against: that glitch's own internal frame-to-frame deltas are each
+    # individually unremarkable (a gradual few-frame collapse, not one
+    # teleport), so a velocity clamp alone cannot catch it -- confirmed
+    # empirically: an earlier, tighter version of this constant (700 deg/s)
+    # let the glitch through anyway while ALSO clipping a genuine fast rise
+    # (this same video's real first rep has raw frame-to-frame deltas of
+    # 900-1300+ deg/s -- well above what the classifier's SMOOTHED
+    # peak-velocity metric reports, since smoothing dampens instantaneous
+    # spikes). This ceiling is set safely above that genuine range, so it
+    # only catches single-frame teleports too extreme to be human under any
+    # interpretation (the glitch's worst single jump measured ~3800 deg/s).
+    MAX_PLAUSIBLE_VELOCITY_DEG_S = 2500.0
+
+    # Primary defense against the real glitch found in sit_to_stand_
+    # controlled.mp4: a MediaPipe tracking glitch mid-session swung the
+    # composite angle down to ~1 degree for a handful of frames via a
+    # gradual few-frame collapse (see MAX_PLAUSIBLE_VELOCITY_DEG_S above for
+    # why a velocity clamp alone can't catch that shape of glitch). Any
+    # reading more than this many degrees below the tracker's own
+    # observed_min_angle (which, post-settling, reflects the person's real
+    # calibrated seated baseline) is rejected outright -- not fed into
+    # angle history, the AMI classifier, or StandTransitionTracker's
+    # armed/rearm state at all. Set generously (matching the same
+    # ballpark as MIN_PEAK_MARGIN_DEG/REARM_MARGIN_DEG on
+    # StandTransitionTracker) so genuine per-person variation in how low
+    # someone sits isn't mistaken for a glitch.
+    MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG = 20.0
+
     def __init__(self):
         self.buffer = TemporalSequenceBuffer(maxlen=45)
         self.transition_tracker = StandTransitionTracker()
         self.min_angle_seen = float("inf")
         self.max_angle_seen = float("-inf")
         self._angle_samples: list[float] = []
+        self._last_accepted_angle: float | None = None
+        self._last_accepted_timestamp: float | None = None
         # One entry per detected rep, each recording BOTH joint angles at
         # peak (not just the composite) — per the original build-scope note
         # for this feature ("tracking hip and knee angle at the top/bottom
@@ -575,12 +670,51 @@ class _CandidateBodySideTrack:
             return
         self.transition_tracker.observe_baseline(standing_angle)
 
+    def finalize_settling(self) -> None:
+        """Call exactly once, when settling ends — see
+        StandTransitionTracker.finalize_baseline."""
+        self.transition_tracker.finalize_baseline()
+
     def push_frame(self, hip_angle: float, knee_angle: float, timestamp: float) -> dict:
         # A real stand needs BOTH joints extended — taking the minimum means
         # a partial compensation (e.g. knee locks out but hips stay flexed)
         # doesn't get credited as a full rep. See StandTransitionTracker's
         # docstring for why this matters clinically, not just numerically.
         standing_angle = min(hip_angle, knee_angle)
+
+        # Reject a physically-implausible frame-to-frame jump before it can
+        # reach ANY tracked state (angle history, the AMI classifier,
+        # observed_min) — see MAX_PLAUSIBLE_VELOCITY_DEG_S above for why
+        # this exists and why visibility gating alone doesn't catch it.
+        if self._last_accepted_timestamp is not None:
+            dt = timestamp - self._last_accepted_timestamp
+            if dt > 0:
+                implied_speed = abs(standing_angle - self._last_accepted_angle) / dt
+                if implied_speed > self.MAX_PLAUSIBLE_VELOCITY_DEG_S:
+                    return {"standing_angle": round(standing_angle, 1), "rejected_implausible_jump": True}
+
+        # Second, independent guard: reject a reading implausibly far below
+        # the calibrated seated baseline, even if it arrived via a gradual
+        # multi-frame decline that never tripped the velocity guard above.
+        # This is what actually stops the real glitch this module was
+        # hardened against (see MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG) --
+        # confirmed necessary by testing: the velocity guard alone lets the
+        # glitch's entry frames through (each individual frame-to-frame
+        # step is unremarkable; only the cumulative ~10-frame trend is
+        # implausible), and even bounding _observed_min_angle's own floor
+        # wasn't sufficient on its own, because REARM compares the RAW
+        # current angle against that floor -- an unclamped glitch value
+        # still re-arms the tracker and lets ordinary standing sway
+        # register as a spurious new rep right after the glitch passes.
+        # Rejecting the frame entirely, before it reaches check_for_peak at
+        # all, closes that gap in one place instead of chasing it through
+        # every downstream comparison.
+        observed_min = self.transition_tracker._observed_min_angle
+        if observed_min != float("inf") and standing_angle < observed_min - self.MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG:
+            return {"standing_angle": round(standing_angle, 1), "rejected_implausible_low_angle": True}
+
+        self._last_accepted_angle = standing_angle
+        self._last_accepted_timestamp = timestamp
 
         self.latest_hip_angle = round(hip_angle, 1)
         self.latest_knee_angle = round(knee_angle, 1)
@@ -607,9 +741,11 @@ class _CandidateBodySideTrack:
 
         motion = AMIAnomalyClassifier.classify_motion(velocity, acceleration)
         current_velocity = float(velocity[-1])
+        window_peak_speed = float(np.max(np.abs(velocity)))
 
         self._current_rep_peak_velocity = max(self._current_rep_peak_velocity, current_velocity)
-        if motion["is_jerky"]:
+        is_genuinely_jerky = motion["is_jerky"] and window_peak_speed >= self.MIN_VELOCITY_FOR_JERKY_DEG_S
+        if is_genuinely_jerky:
             self._consecutive_jerky_frames += 1
         else:
             self._consecutive_jerky_frames = 0
@@ -715,6 +851,7 @@ class RehabSitToStandSession:
         self._frames_with_pose = 0
         self._last_alignment_level = None
         self._live_recording_started_at = None
+        self._settling_finalized = False
         self.alignment_cue = CueChannel()
         self.summary = SessionSummary()
 
@@ -729,6 +866,7 @@ class RehabSitToStandSession:
         self._frames_with_pose = 0
         self._last_alignment_level = None
         self._live_recording_started_at = None
+        self._settling_finalized = False
         self.alignment_cue = CueChannel()
 
     def advance_state(self) -> SitToStandState:
@@ -741,10 +879,25 @@ class RehabSitToStandSession:
             self._reset_recording()
         return self.state
 
+    def finalize_settling(self) -> None:
+        """Call exactly once, the moment settling ends and real rep
+        tracking is about to begin — summarizes each candidate track's
+        accumulated settling samples into its calibrated baseline (see
+        StandTransitionTracker.finalize_baseline). Idempotent: safe to call
+        even if settling never produced samples."""
+        if self._settling_finalized:
+            return
+        self._settling_finalized = True
+        for candidate in self._candidates.values():
+            candidate.finalize_settling()
+
     def is_settling(self, now: float) -> bool:
         if self._live_recording_started_at is None:
             self._live_recording_started_at = now
-        return (now - self._live_recording_started_at) < self.LIVE_SETUP_GRACE_PERIOD_S
+        settling = (now - self._live_recording_started_at) < self.LIVE_SETUP_GRACE_PERIOD_S
+        if not settling:
+            self.finalize_settling()
+        return settling
 
     def _decide_tracked_landmark_side(self) -> str:
         left_rom = self._candidates["left"].range_of_motion
@@ -757,6 +910,8 @@ class RehabSitToStandSession:
             return {}
         frame_results = {}
         for candidate in ("left", "right"):
+            if not landmarks_confident(pose_landmarks, candidate):
+                continue
             shoulder, hip, knee, ankle = extract_body_landmarks(pose_landmarks, candidate, frame_w, frame_h)
             hip_angle = VectorGeometryEngine.calculate_joint_angle(shoulder, hip, knee)
             knee_angle = VectorGeometryEngine.calculate_joint_angle(hip, knee, ankle)
@@ -770,6 +925,8 @@ class RehabSitToStandSession:
         if not self._active() or pose_landmarks is None:
             return
         for candidate in ("left", "right"):
+            if not landmarks_confident(pose_landmarks, candidate):
+                continue
             shoulder, hip, knee, ankle = extract_body_landmarks(pose_landmarks, candidate, frame_w, frame_h)
             hip_angle = VectorGeometryEngine.calculate_joint_angle(shoulder, hip, knee)
             knee_angle = VectorGeometryEngine.calculate_joint_angle(hip, knee, ankle)
@@ -1138,7 +1295,28 @@ def run_batch_validation(video_path: str) -> dict:
 
     Sit-to-stand is bilateral (no left/right split), so unlike the knee-
     extension version this only needs ONE video, not two.
+
+    Runs a short settling/calibration window before rep tracking starts,
+    using video-relative time instead of wall-clock time -- the same idea
+    as a live session's RehabSitToStandSession.LIVE_SETUP_GRACE_PERIOD_S,
+    but deliberately much shorter (BATCH_SETTLING_WINDOW_S below), not that
+    same 3.0s constant reused as-is. This was missing until real footage
+    testing found it necessary: without ANY calibration, the very first
+    frames of a clip (camera panning in, subject not yet fully framed) seed
+    StandTransitionTracker._observed_min_angle -- a running minimum that
+    never resets for the life of the session -- with whatever garbage those
+    opening frames show, corrupting rep detection for the entire rest of
+    the video. Confirmed via sit_to_stand_controlled.mp4: the first ~0.3s
+    reads a spurious ~18 degree low before the subject settles into their
+    real range, which without this fix anchors the floor for the whole
+    ~275s clip. The live grace period (3.0s) is deliberately NOT reused
+    here: that constant assumes a live user still getting into position,
+    but a pre-recorded clip's real exercise can start almost immediately
+    (confirmed: this same clip's first genuine rep peaks at ~2.4s) -- a
+    3.0s window would silently discard real reps that happen to start
+    early, not just skip transient opening noise.
     """
+    BATCH_SETTLING_WINDOW_S = 0.5
     session = RehabSitToStandSession()
 
     def _drain(path: str):
@@ -1156,7 +1334,11 @@ def run_batch_validation(video_path: str) -> dict:
                 video_timestamp = frame_idx / fps
                 frame_idx += 1
                 if results.pose_landmarks:
-                    session.process_frame(results.pose_landmarks, w, h, video_timestamp)
+                    if video_timestamp < BATCH_SETTLING_WINDOW_S:
+                        session.observe_settling_frame(results.pose_landmarks, w, h)
+                    else:
+                        session.finalize_settling()
+                        session.process_frame(results.pose_landmarks, w, h, video_timestamp)
         finally:
             cap.release()
             pose.close()

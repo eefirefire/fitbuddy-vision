@@ -33,23 +33,32 @@ Source: "Sit to Stand Strengthening Exercise" by Signature Medical Group /
 Dave Reddy (YouTube, ~4.5min, downloaded via yt-dlp for local testing only).
 A trainer demoing controlled reps with narration between them — closer to
 the actual OEP-style controlled pacing this module's thresholds are tuned
-for than the timed max-reps test above. Run through `run_batch_validation()`:
-- 6 "reps" detected. Reps 1-4 (standing_angle 155-172 deg) are plausible
-  genuine stands with correctly-clamped small deficits.
-- **Real limitation surfaced, not a crash:** reps 2-4 show implausibly long
-  `eccentric_duration_s` (97s, 34.5s, 13.28s) and got flagged `is_jerky`.
-  This is the trainer talking/gesturing between demo reps — small sustained
-  motion during a long pause gets picked up as part of the "descent" instead
-  of a new settled baseline, so the duration and jerk numbers for those reps
-  aren't clinically meaningful. A real single-patient session (stand, sit,
-  brief pause, repeat) won't have multi-minute narration gaps like this, but
-  it's a real edge case worth knowing about: if Dad talks or fidgets for a
-  long time mid-session, expect a noisy report on that rep, not a crash.
+for than the timed max-reps test above, and the clip that found three real
+bugs in `rehab_sit_to_stand.py` (see "Bugs found and fixed" below). Run
+through `run_batch_validation()` after those fixes:
+- 6 "reps" detected. Rep 1 (standing_angle 172.1) is a clean genuine stand.
+- **Reps 2-4 are real, not a bug — just an artifact of this specific demo,
+  verified by inspecting the raw per-frame angle trace directly, not just
+  the summary numbers.** The trainer stands and talks for extended periods
+  (13-97s) between reps rather than sitting straight back down; the long
+  `eccentric_duration_s` values (97.0, 34.5, 13.28) are genuinely measuring
+  "time spent still elevated before sitting low enough to re-arm," not a
+  slow/bad descent, and `is_jerky` is genuinely true — the trainer's
+  natural weight-shifting and gesturing while standing still really does
+  produce non-smooth motion in the tracked angle, even though it isn't
+  clinically meaningful. Voice-cue behavior was hand-verified frame-by-frame
+  against this: `Good` fires correctly on rep 1, `Slow down` fires exactly
+  once per jerky rep (correctly suppressing `Good`/`Stand up further` on
+  each), and nothing fires falsely. A real single-patient session won't
+  have multi-minute narration gaps like this, so this pattern is unlikely
+  to recur Sunday, but if Dad pauses and talks for a long time mid-session,
+  expect a similar "technically correct, clinically confusing" report on
+  that rep — not a crash, not wrong data, just a metric that isn't
+  meaningful outside its intended controlled-single-rep context.
 - Reps 5-6 (standing_angle ~43-50 deg) are clearly not full stands — most
   likely a different exercise demonstrated later in the same video, not a
   tracking failure (both hip and knee angles agree with each other at that
-  low angle, which is what you'd expect from a real seated/bent position,
-  not sensor noise).
+  low angle, and the reading is stable across frames, not noisy).
 - Zero crashes, no NaN propagation, across the full ~275s clip.
 
 ### `sit_to_stand_walker.mp4`
@@ -58,17 +67,51 @@ Source: "How to Sit Down and Stand Up with a Walker" by RegisteredNurseRN
 demo of the walker-assisted sit-to-stand transfer — relevant because
 walker use is common in this app's actual target population (older
 adults with fall risk) and wasn't tested before. Run through
-`run_batch_validation()`:
-- 2 reps detected. Rep 2 (standing_angle 167.3 deg) is a clean, plausible
-  full stand.
-- Rep 1 (standing_angle 52.8 deg, both hip and knee angles agreeing at
-  that low position) is real footage but not a full stand — likely an
-  earlier segment of the demo (seated/mid-transfer position), same
-  "different segment, not sensor noise" pattern as above.
+`run_batch_validation()` after the fixes below:
+- 1 rep detected (standing_angle 167.3, peak velocity 26.9 deg/s — a
+  genuinely slow, controlled, instructional-pace stand). `Good` fires
+  correctly, no false cues. The earlier run (before the settling/glitch
+  fixes) showed a spurious extra "rep" at 52.8 degrees very early in the
+  clip; re-inspection confirmed that was settling-window noise, not a
+  second real segment as first guessed — it's gone now that settling uses
+  a robust (median) baseline instead of a bare running minimum.
 - No crash or landmark failure from the walker being held in both hands —
   pose detection tracked hip/knee/shoulder normally despite the
   assistive device. This is a genuinely useful data point for Sunday if
   Dad uses any kind of support.
+
+### Bugs found and fixed in `rehab_sit_to_stand.py` this pass
+Found by testing cue correctness against real footage, not just checking
+for crashes — three real, verified bugs, each with a regression test:
+1. **A MediaPipe tracking glitch could permanently corrupt rep detection.**
+   `sit_to_stand_controlled.mp4` has one frame where the composite angle
+   jumps ~115 degrees in a single frame (~3800 deg/s, physically
+   impossible) while MediaPipe reported normal-to-high landmark confidence
+   throughout — so confidence-score gating alone doesn't catch it. Fixed
+   with two independent guards in `_CandidateBodySideTrack.push_frame`: a
+   raw-velocity ceiling for single-frame teleports, and a
+   floor-relative-to-calibrated-baseline check for gradual multi-frame
+   drift, since the glitch's own internal per-frame deltas were each too
+   small to trip a velocity check alone.
+2. **Batch validation (`run_batch_validation`, the function this Sunday's
+   goniometer comparison will use) never calibrated a settling baseline at
+   all** — live sessions get 3 seconds of setup time before tracking
+   starts; batch mode went straight from frame 0, so a video's opening
+   frames (camera panning in, subject not yet framed) could anchor the
+   entire session's rep-detection floor. Fixed by adding a short (0.5s)
+   settling window to batch mode too.
+3. **The settling window itself used a running MINIMUM, the least
+   robust statistic possible against contaminated calibration frames** — a
+   single bad opening frame would poison the whole session. Fixed by
+   collecting all settling-window samples and committing the calibrated
+   baseline as their MEDIAN once settling ends, both for live sessions and
+   batch validation.
+
+All three are covered by new tests in `test_rehab_sit_to_stand.py`
+(42 passing total, up from 18). Also separately fixed (session-quality, not
+correctness): the AMI/jerk classifier was firing during genuinely
+motionless rest periods due to landmark micro-jitter alone — gated behind a
+minimum real-motion floor so only actual physical movement can trigger it.
 
 **Update:** `seated_knee_extension_real.mp4` (added later) IS real footage of
 this exact exercise, properly side-on — use that one first. The squat clips
