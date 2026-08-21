@@ -2,7 +2,7 @@
 
 **Hybrid edge-cloud computer vision for exercise coaching and orthopedic rehabilitation — no wearables, no lab, just a laptop webcam.**
 
-Built by [Anavin Srison (Evin)](https://github.com/eefirefire) · TISIIF 2026 & TICTA 2026 Student Project
+Built by [Anavin Srison (Evin)](https://github.com/eefirefire) — engineering & implementation, and Eva — research design & clinical grounding · TISIIF 2026 & TICTA 2026 Student Project
 
 ---
 
