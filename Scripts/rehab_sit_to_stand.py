@@ -64,6 +64,7 @@ import time
 import enum
 import uuid
 import tempfile
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -337,6 +338,20 @@ class StandTransitionTracker:
     # movement; a rolling median has no such stall condition).
     MIN_ANGLE_MEDIAN_WINDOW = 3
 
+    # Above this deviation from the recently-observed settling samples, an
+    # individual settling-window reading is dropped before it ever reaches
+    # _baseline_samples. Added because the two rejection guards in
+    # _CandidateBodySideTrack.push_frame only cover the ACTIVE-tracking
+    # path -- the settling window itself had zero defense against the same
+    # class of glitch this module was hardened against, and the diff's own
+    # comments identify a clip's opening frames (i.e. the settling window)
+    # as the highest-risk period for exactly this glitch. This can't reuse
+    # the velocity-based guard (settling doesn't thread timestamps through),
+    # so it's a simpler magnitude-vs-recent-median check instead -- generous
+    # enough to tolerate genuine settling-period movement (a person still
+    # adjusting position) while still catching a multi-degree collapse.
+    MAX_BASELINE_SAMPLE_DEVIATION_DEG = 30.0
+
     def __init__(self):
         self._armed = True
         self._running_max_angle = float("-inf")
@@ -344,6 +359,25 @@ class StandTransitionTracker:
         self._recent_angles = deque(maxlen=self.MIN_ANGLE_MEDIAN_WINDOW)
         self._peak_timestamp = None
         self._baseline_samples: list[float] = []
+        self._baseline_recent = deque(maxlen=self.MIN_ANGLE_MEDIAN_WINDOW)
+        # True only once finalize_baseline has actually summarized REAL
+        # settling samples into _observed_min_angle. Distinct from
+        # "_observed_min_angle != inf", which can also become true through
+        # the old fallback path (the first active-tracking frame reaching
+        # check_for_peak with no settling data at all) -- that fallback
+        # value has NO calibration behind it and can be wrong in either
+        # direction (e.g. seeded from a standing pose if settling produced
+        # zero confident-landmark samples, as found against real footage:
+        # sit_to_stand_walker.mp4's opening ~1.2s has visibility too low
+        # for BOTH candidate sides throughout the whole settling window).
+        # _CandidateBodySideTrack.push_frame's drift-below-baseline guard
+        # must only trust the floor once it's genuinely calibrated --
+        # otherwise a wrong high fallback anchor permanently locks out
+        # every later genuinely-low (e.g. real seated) reading, since
+        # nothing can ever lower the floor once low readings are
+        # pre-emptively rejected as "implausible" relative to it. A
+        # confirmed real regression from an earlier version of this guard.
+        self.baseline_calibrated = False
 
     def _update_observed_min(self, current_angle: float) -> None:
         self._recent_angles.append(current_angle)
@@ -361,9 +395,18 @@ class StandTransitionTracker:
         own opening ~0.3-0.5s reads a spurious ~18 degree low (camera
         panning in / subject not yet framed) before settling into the
         subject's real range -- a running min would permanently anchor the
-        entire session's rep-detection floor to that one bad artifact."""
+        entire session's rep-detection floor to that one bad artifact.
+
+        Also rejects individual samples wildly inconsistent with recently-
+        seen settling samples before they ever reach _baseline_samples --
+        see MAX_BASELINE_SAMPLE_DEVIATION_DEG."""
         if np.isnan(angle):
             return
+        if len(self._baseline_recent) >= 2:
+            recent_median = float(np.median(self._baseline_recent))
+            if abs(angle - recent_median) > self.MAX_BASELINE_SAMPLE_DEVIATION_DEG:
+                return
+        self._baseline_recent.append(angle)
         self._baseline_samples.append(angle)
 
     def finalize_baseline(self) -> None:
@@ -373,9 +416,20 @@ class StandTransitionTracker:
         contaminated opening frames, since it takes a majority of bad
         samples (not just one) to meaningfully move a median. If settling
         never ran (no samples), leaves _observed_min_angle at its default
-        (inf), preserving the old unbounded-fallback behavior."""
+        (inf), preserving the old unbounded-fallback behavior.
+
+        Also primes _recent_angles (the median-of-3 outlier filter used by
+        every check_for_peak call during active tracking) with the tail of
+        the settling samples. Without this, _recent_angles starts empty
+        when active tracking begins, so the first 1-2 real check_for_peak
+        calls compute a median over just 1-2 values -- effectively zero
+        outlier protection right when tracking starts, even though real
+        settling data existed to seed it with."""
         if self._baseline_samples:
             self._observed_min_angle = float(np.median(self._baseline_samples))
+            for angle in self._baseline_samples[-self.MIN_ANGLE_MEDIAN_WINDOW:]:
+                self._recent_angles.append(angle)
+            self.baseline_calibrated = True
 
     def check_for_peak(self, current_angle: float, timestamp: float = None):
         """
@@ -611,11 +665,48 @@ class _CandidateBodySideTrack:
     # observed_min_angle (which, post-settling, reflects the person's real
     # calibrated seated baseline) is rejected outright -- not fed into
     # angle history, the AMI classifier, or StandTransitionTracker's
-    # armed/rearm state at all. Set generously (matching the same
-    # ballpark as MIN_PEAK_MARGIN_DEG/REARM_MARGIN_DEG on
-    # StandTransitionTracker) so genuine per-person variation in how low
-    # someone sits isn't mistaken for a glitch.
-    MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG = 20.0
+    # armed/rearm state at all. Set to match REARM_MARGIN_DEG exactly
+    # (rather than exceeding it, as an earlier version of this constant
+    # did) so there's no reading this guard accepts that wasn't already
+    # going to be treated as "back near baseline" by StandTransitionTracker
+    # itself -- the two thresholds now agree on what counts as "close to
+    # the floor" instead of disagreeing by a several-degree band. Real
+    # protection against a single bad reading dragging the floor down
+    # comes from _update_observed_min's median-of-3 smoothing, not from
+    # this number alone.
+    MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG = 15.0
+
+    # Above this implied velocity for EITHER individual joint (not just the
+    # composite), a frame is rejected. Needed because both guards above
+    # only ever look at the composite standing_angle = min(hip, knee) -- a
+    # glitch confined to the joint that ISN'T currently the composite
+    # minimum (e.g. knee_angle spikes while hip_angle, unaffected, stays
+    # smaller) passes both composite guards untouched, and the raw glitched
+    # value can still be captured into _hip_at_running_peak/
+    # _knee_at_running_peak and written verbatim into a rep's clinical
+    # output. Same ceiling as MAX_PLAUSIBLE_VELOCITY_DEG_S since it's
+    # checking the same underlying quantity (a single joint's angular
+    # velocity), just per-joint instead of composite.
+    MAX_PLAUSIBLE_JOINT_VELOCITY_DEG_S = MAX_PLAUSIBLE_VELOCITY_DEG_S
+
+    # NOTE on staleness: _last_accepted_timestamp only advances on
+    # acceptance, so during a run of REJECTED frames, dt against that
+    # stale reference grows, and implied_speed = |delta| / dt shrinks for
+    # the same angle change -- looked at in isolation, that seems like it
+    # should be "fixed" by capping dt. It deliberately isn't: given
+    # MAX_PLAUSIBLE_VELOCITY_DEG_S=2500 and the anatomical maximum
+    # possible delta (180 degrees), NO within-range value can ever exceed
+    # this guard once dt is more than ~0.07s -- meaning the velocity
+    # guard, by construction, is already only an effective defense against
+    # a near-single-frame teleport (dt on the order of one frame interval
+    # at typical camera frame rates), never a multi-frame or sustained
+    # drift regardless of staleness. A dt cap can't change that without
+    # either being smaller than a real frame interval (risking false
+    # rejections of ordinary consecutive-frame motion) or being too large
+    # to matter (as any cap at or above ~0.07s would be). The actual
+    # defense against sustained/gradual drift -- staleness included -- is
+    # MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG below, which is time-
+    # independent and does not degrade as the reference goes stale.
 
     def __init__(self):
         self.buffer = TemporalSequenceBuffer(maxlen=45)
@@ -624,7 +715,16 @@ class _CandidateBodySideTrack:
         self.max_angle_seen = float("-inf")
         self._angle_samples: list[float] = []
         self._last_accepted_angle: float | None = None
+        self._last_accepted_hip_angle: float | None = None
+        self._last_accepted_knee_angle: float | None = None
         self._last_accepted_timestamp: float | None = None
+        # Counts frames rejected by either guard below -- not clinically
+        # meaningful on its own, but without SOME visibility into how often
+        # frames are being silently dropped, a mistuned threshold (too
+        # strict for a given camera setup or lighting) would look
+        # indistinguishable from "fewer/noisier reps" with no signal
+        # pointing at the actual cause. Surfaced in final_report().
+        self.rejected_frame_count = 0
         # One entry per detected rep, each recording BOTH joint angles at
         # peak (not just the composite) — per the original build-scope note
         # for this feature ("tracking hip and knee angle at the top/bottom
@@ -686,12 +786,30 @@ class _CandidateBodySideTrack:
         # reach ANY tracked state (angle history, the AMI classifier,
         # observed_min) — see MAX_PLAUSIBLE_VELOCITY_DEG_S above for why
         # this exists and why visibility gating alone doesn't catch it.
+        # A non-monotonic timestamp (dt<=0 -- a duplicate or out-of-order
+        # frame, e.g. a reused session fed a second clip whose timestamps
+        # restart near 0) is ALSO rejected here rather than silently
+        # skipping the check entirely: trusting an angle whose timing
+        # can't even be ordered relative to the last accepted frame is not
+        # meaningfully safer than trusting an implausible jump.
         if self._last_accepted_timestamp is not None:
             dt = timestamp - self._last_accepted_timestamp
-            if dt > 0:
-                implied_speed = abs(standing_angle - self._last_accepted_angle) / dt
-                if implied_speed > self.MAX_PLAUSIBLE_VELOCITY_DEG_S:
-                    return {"standing_angle": round(standing_angle, 1), "rejected_implausible_jump": True}
+            if dt <= 0:
+                self.rejected_frame_count += 1
+                return {"standing_angle": round(standing_angle, 1), "rejected_non_monotonic_timestamp": True}
+            implied_speed = abs(standing_angle - self._last_accepted_angle) / dt
+            if implied_speed > self.MAX_PLAUSIBLE_VELOCITY_DEG_S:
+                self.rejected_frame_count += 1
+                return {"standing_angle": round(standing_angle, 1), "rejected_implausible_jump": True}
+            # Same check applied to EACH joint individually, not just the
+            # composite -- see MAX_PLAUSIBLE_JOINT_VELOCITY_DEG_S for why:
+            # a glitch confined to the non-limiting joint is invisible to
+            # every composite-only guard.
+            hip_speed = abs(hip_angle - self._last_accepted_hip_angle) / dt
+            knee_speed = abs(knee_angle - self._last_accepted_knee_angle) / dt
+            if hip_speed > self.MAX_PLAUSIBLE_JOINT_VELOCITY_DEG_S or knee_speed > self.MAX_PLAUSIBLE_JOINT_VELOCITY_DEG_S:
+                self.rejected_frame_count += 1
+                return {"standing_angle": round(standing_angle, 1), "rejected_implausible_jump": True}
 
         # Second, independent guard: reject a reading implausibly far below
         # the calibrated seated baseline, even if it arrived via a gradual
@@ -709,11 +827,29 @@ class _CandidateBodySideTrack:
         # Rejecting the frame entirely, before it reaches check_for_peak at
         # all, closes that gap in one place instead of chasing it through
         # every downstream comparison.
+        #
+        # Gated on baseline_calibrated, NOT merely observed_min != inf --
+        # see StandTransitionTracker.baseline_calibrated's docstring for
+        # why: _observed_min_angle can become finite through the OLD
+        # uncalibrated fallback (the first active-tracking frame, if
+        # settling produced zero samples for this side), and trusting that
+        # as a real floor is actively harmful, not just unhelpful --
+        # confirmed against real footage (sit_to_stand_walker.mp4, whose
+        # opening ~1.2s has too-low landmark visibility for BOTH candidate
+        # sides throughout the entire settling window): a fallback floor
+        # seeded from a STANDING pose permanently locked out every later
+        # genuinely-low seated reading, since nothing could ever lower the
+        # floor once low readings were pre-emptively rejected relative to
+        # the wrong anchor -- a real regression, not a theoretical one.
         observed_min = self.transition_tracker._observed_min_angle
-        if observed_min != float("inf") and standing_angle < observed_min - self.MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG:
+        if (self.transition_tracker.baseline_calibrated
+                and standing_angle < observed_min - self.MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG):
+            self.rejected_frame_count += 1
             return {"standing_angle": round(standing_angle, 1), "rejected_implausible_low_angle": True}
 
         self._last_accepted_angle = standing_angle
+        self._last_accepted_hip_angle = hip_angle
+        self._last_accepted_knee_angle = knee_angle
         self._last_accepted_timestamp = timestamp
 
         self.latest_hip_angle = round(hip_angle, 1)
@@ -827,6 +963,7 @@ class SessionSummary:
     standing_deficit_deg: float = 0.0
     is_jerky: bool = False
     reps: list = field(default_factory=list)
+    rejected_frame_count: int = 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -840,6 +977,18 @@ class RehabSitToStandSession:
     on."""
 
     LIVE_SETUP_GRACE_PERIOD_S = 3.0
+    # Settling window for pre-recorded video sources (batch validation AND
+    # the /upload route -- both feed frames far faster than real time, so
+    # the live 3.0s grace period doesn't apply). Set well beyond the
+    # documented real-footage contamination duration (~0.3-0.5s, see
+    # StandTransitionTracker.observe_baseline) rather than right at its
+    # edge, so a slightly-longer-than-the-one-test-video contamination
+    # period still gets fully absorbed by the settling window instead of
+    # partially contaminating the calibration median. A proper class
+    # constant (not a local buried inside one function) so it's
+    # discoverable/tunable/testable the same way LIVE_SETUP_GRACE_PERIOD_S
+    # is.
+    BATCH_SETTLING_WINDOW_S = 1.0
     _ALIGNMENT_CUE_LEVELS = frozenset({"caution", "poor"})
 
     def __init__(self):
@@ -850,7 +999,8 @@ class RehabSitToStandSession:
         self._frames_processed = 0
         self._frames_with_pose = 0
         self._last_alignment_level = None
-        self._live_recording_started_at = None
+        self._route_started_at = None
+        self._settling_window_s = None
         self._settling_finalized = False
         self.alignment_cue = CueChannel()
         self.summary = SessionSummary()
@@ -865,7 +1015,8 @@ class RehabSitToStandSession:
         self._frames_processed = 0
         self._frames_with_pose = 0
         self._last_alignment_level = None
-        self._live_recording_started_at = None
+        self._route_started_at = None
+        self._settling_window_s = None
         self._settling_finalized = False
         self.alignment_cue = CueChannel()
 
@@ -892,12 +1043,53 @@ class RehabSitToStandSession:
             candidate.finalize_settling()
 
     def is_settling(self, now: float) -> bool:
-        if self._live_recording_started_at is None:
-            self._live_recording_started_at = now
-        settling = (now - self._live_recording_started_at) < self.LIVE_SETUP_GRACE_PERIOD_S
-        if not settling:
-            self.finalize_settling()
-        return settling
+        """Whether `now` (in whatever time basis the current recording's
+        frames use -- wall-clock for a live session, video-relative for a
+        batch/upload source) still falls within the settling window
+        established by the FIRST call to route_frame for this recording.
+        Reads the same state route_frame maintains rather than
+        recomputing its own formula, so this can never disagree with
+        route_frame about whether settling has actually finalized (a real
+        bug the previous version of live_status had: it independently
+        recomputed a wall-clock-only settling flag that could go False
+        before finalize_settling had actually run)."""
+        if self._route_started_at is None or self._settling_window_s is None:
+            return True
+        return (now - self._route_started_at) < self._settling_window_s
+
+    def route_frame(self, pose_landmarks, frame_w: int, frame_h: int, timestamp: float,
+                     settling_window_s: float) -> dict:
+        """Single entry point ALL frame sources must use: the live MJPEG
+        stream, batch validation, and the /upload route. Decides settling
+        vs. active tracking from `timestamp` against `settling_window_s`
+        (LIVE_SETUP_GRACE_PERIOD_S for a live stream, BATCH_SETTLING_WINDOW_S
+        for a pre-recorded source) and triggers finalize_settling() exactly
+        once when the window ends.
+
+        This exists because settling/calibration used to be reimplemented
+        independently at each call site with different fidelity -- live
+        got the full treatment, batch validation got a hand-rolled
+        shorter version, and the /upload route got none at all, silently
+        reintroducing the exact uncalibrated-floor bug this whole
+        settling mechanism was built to fix. Routing every frame source
+        through one method means a future fix to settling behavior only
+        has one place to land, and a new frame source can't forget to
+        wire calibration in at all.
+
+        Returns the process_frame-shaped result dict ({} while settling,
+        inactive, or given no pose_landmarks)."""
+        if not self._active() or pose_landmarks is None:
+            return {}
+        self._settling_window_s = settling_window_s
+        if self._route_started_at is None:
+            self._route_started_at = timestamp
+        settling = (timestamp - self._route_started_at) < settling_window_s
+        if settling:
+            self.observe_settling_frame(pose_landmarks, frame_w, frame_h)
+            return {}
+        self.finalize_settling()
+        self.note_alignment_frame()
+        return self.process_frame(pose_landmarks, frame_w, frame_h, timestamp)
 
     def _decide_tracked_landmark_side(self) -> str:
         left_rom = self._candidates["left"].range_of_motion
@@ -950,10 +1142,7 @@ class RehabSitToStandSession:
         if not self._active():
             return {"active": False, "state": self.state.value}
 
-        settling = (
-            self._live_recording_started_at is None
-            or (time.time() - self._live_recording_started_at) < self.LIVE_SETUP_GRACE_PERIOD_S
-        )
+        settling = self.is_settling(time.time())
 
         track = self._candidates[self._decide_tracked_landmark_side()]
         alignment_level = self._alignment_checker.recent_level()
@@ -996,6 +1185,7 @@ class RehabSitToStandSession:
             standing_deficit_deg=best["standing_deficit_deg"] if best else 0.0,
             is_jerky=any(r["is_jerky"] for r in track.reps),
             reps=track.reps,
+            rejected_frame_count=track.rejected_frame_count,
         )
 
     def final_report(self) -> dict:
@@ -1007,6 +1197,7 @@ class RehabSitToStandSession:
             "is_jerky": self.summary.is_jerky,
             "reps": self.summary.reps,
             "rep_count": len(self.summary.reps),
+            "rejected_frame_count": self.summary.rejected_frame_count,
         }
 
 
@@ -1051,6 +1242,21 @@ def _allow_cors(response):
 # rehab_knee_extension.py: a production deployment would key this by
 # session/user id instead of a module-level global.
 _session = RehabSitToStandSession()
+
+# Guards state-mutating access to _session across threads. Flask runs with
+# threaded=True (needed so /live-status stays responsive during the
+# long-lived MJPEG stream). /reset already avoids the worst of this by
+# reassigning the global rather than mutating in place, but /advance
+# mutates the SAME session object _mjpeg_generator holds a reference to
+# (_reset_recording() replaces _candidates and resets settling state) --
+# without a lock, an /advance request landing between the generator's
+# settling check and its frame-processing call feeds a live frame into
+# freshly-reset, never-settled candidates, silently reintroducing the
+# uncalibrated-floor bug this module was hardened against. Held only
+# around the specific mutate-or-read-then-act sequences that need to stay
+# atomic, not around every request.
+_session_lock = threading.Lock()
+
 _pose_model = mp_pose.Pose(
     model_complexity=1,
     min_detection_confidence=0.6,
@@ -1139,14 +1345,16 @@ def _mjpeg_generator():
             session._frames_processed += 1
             if results.pose_landmarks:
                 session._frames_with_pose += 1
-                now = time.time()
                 session._alignment_checker.push_frame(results.pose_landmarks)
-                if session._active():
-                    if not session.is_settling(now):
-                        session.note_alignment_frame()
-                        frame_result = session.process_frame(results.pose_landmarks, w, h, now)
-                    else:
-                        session.observe_settling_frame(results.pose_landmarks, w, h)
+                # Locked so a concurrent /advance can't reset _candidates
+                # between the settling check and process_frame -- see
+                # _session_lock's docstring.
+                with _session_lock:
+                    if session._active():
+                        frame_result = session.route_frame(
+                            results.pose_landmarks, w, h, time.time(),
+                            RehabSitToStandSession.LIVE_SETUP_GRACE_PERIOD_S,
+                        )
                 mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
             frame = _draw_overlay(frame, frame_result, session.state, session.live_status())
@@ -1209,7 +1417,11 @@ def upload_video():
                 if results.pose_landmarks:
                     frames_with_pose += 1
                     alignment_checker.push_frame(results.pose_landmarks)
-                    _session.process_frame(results.pose_landmarks, w, h, video_timestamp)
+                    with _session_lock:
+                        _session.route_frame(
+                            results.pose_landmarks, w, h, video_timestamp,
+                            RehabSitToStandSession.BATCH_SETTLING_WINDOW_S,
+                        )
         finally:
             source.release()
             upload_pose_model.close()
@@ -1255,7 +1467,11 @@ def clip_summary():
 @app.route("/api/sit-to-stand/advance", methods=["POST"])
 @login_required
 def advance_state():
-    new_state = _session.advance_state()
+    # Locked -- see _session_lock's docstring: this mutates _candidates and
+    # settling state on the same object _mjpeg_generator may be mid-frame
+    # on, and must not interleave with that.
+    with _session_lock:
+        new_state = _session.advance_state()
     return jsonify({"state": new_state.value})
 
 
@@ -1296,27 +1512,20 @@ def run_batch_validation(video_path: str) -> dict:
     Sit-to-stand is bilateral (no left/right split), so unlike the knee-
     extension version this only needs ONE video, not two.
 
-    Runs a short settling/calibration window before rep tracking starts,
-    using video-relative time instead of wall-clock time -- the same idea
-    as a live session's RehabSitToStandSession.LIVE_SETUP_GRACE_PERIOD_S,
-    but deliberately much shorter (BATCH_SETTLING_WINDOW_S below), not that
-    same 3.0s constant reused as-is. This was missing until real footage
-    testing found it necessary: without ANY calibration, the very first
-    frames of a clip (camera panning in, subject not yet fully framed) seed
-    StandTransitionTracker._observed_min_angle -- a running minimum that
-    never resets for the life of the session -- with whatever garbage those
-    opening frames show, corrupting rep detection for the entire rest of
-    the video. Confirmed via sit_to_stand_controlled.mp4: the first ~0.3s
-    reads a spurious ~18 degree low before the subject settles into their
-    real range, which without this fix anchors the floor for the whole
-    ~275s clip. The live grace period (3.0s) is deliberately NOT reused
-    here: that constant assumes a live user still getting into position,
-    but a pre-recorded clip's real exercise can start almost immediately
-    (confirmed: this same clip's first genuine rep peaks at ~2.4s) -- a
-    3.0s window would silently discard real reps that happen to start
-    early, not just skip transient opening noise.
+    Runs a settling/calibration window before rep tracking starts, using
+    video-relative time instead of wall-clock time -- the same idea as a
+    live session's RehabSitToStandSession.LIVE_SETUP_GRACE_PERIOD_S, but
+    RehabSitToStandSession.BATCH_SETTLING_WINDOW_S instead (deliberately
+    shorter than the live grace period: that constant assumes a live user
+    still getting into position, but a pre-recorded clip's real exercise
+    can start almost immediately -- confirmed: sit_to_stand_controlled.mp4's
+    first genuine rep peaks at ~2.4s -- so the live 3.0s window would
+    silently discard real reps that happen to start early). This routes
+    through RehabSitToStandSession.route_frame, the same single settling
+    choke point the live stream and the /upload route also use -- see that
+    method's docstring for why settling used to be reimplemented
+    independently per call site (and, for one call site, not at all).
     """
-    BATCH_SETTLING_WINDOW_S = 0.5
     session = RehabSitToStandSession()
 
     def _drain(path: str):
@@ -1334,11 +1543,10 @@ def run_batch_validation(video_path: str) -> dict:
                 video_timestamp = frame_idx / fps
                 frame_idx += 1
                 if results.pose_landmarks:
-                    if video_timestamp < BATCH_SETTLING_WINDOW_S:
-                        session.observe_settling_frame(results.pose_landmarks, w, h)
-                    else:
-                        session.finalize_settling()
-                        session.process_frame(results.pose_landmarks, w, h, video_timestamp)
+                    session.route_frame(
+                        results.pose_landmarks, w, h, video_timestamp,
+                        RehabSitToStandSession.BATCH_SETTLING_WINDOW_S,
+                    )
         finally:
             cap.release()
             pose.close()

@@ -27,6 +27,18 @@ see that module):
   the OEP-style CONTROLLED single rep (the actual clinical context this
   feature was built for), not the timed test. This video was used only to
   validate the tracking geometry against real motion, not to tune pacing.
+- **Rep count changed from 14 to 11 after the settling-calibration
+  hardening pass** (widened `BATCH_SETTLING_WINDOW_S`, settling now
+  actually seeds `_observed_min_angle`/`_recent_angles` from real data
+  instead of an uncalibrated fallback). Reps 1-11 in the new run match
+  reps 1-9, 11, 12 from the old run value-for-value; the two dropped reps
+  (old #13/#14, one of which had a 46.2s "eccentric duration") most likely
+  reflect a MORE accurately calibrated floor now correctly declining to
+  treat a marginal sway as a full separate stand, rather than a real
+  regression -- but this wasn't independently confirmed by manual frame
+  review, and this video's own timed-test framing already makes its exact
+  rep count the least clinically meaningful number in this repo. Flagged
+  here for transparency rather than quietly accepted.
 
 ### `sit_to_stand_controlled.mp4`
 Source: "Sit to Stand Strengthening Exercise" by Signature Medical Group /
@@ -66,15 +78,30 @@ Source: "How to Sit Down and Stand Up with a Walker" by RegisteredNurseRN
 (YouTube, ~77s, downloaded via yt-dlp for local testing only). A nursing
 demo of the walker-assisted sit-to-stand transfer — relevant because
 walker use is common in this app's actual target population (older
-adults with fall risk) and wasn't tested before. Run through
-`run_batch_validation()` after the fixes below:
-- 1 rep detected (standing_angle 167.3, peak velocity 26.9 deg/s — a
-  genuinely slow, controlled, instructional-pace stand). `Good` fires
-  correctly, no false cues. The earlier run (before the settling/glitch
-  fixes) showed a spurious extra "rep" at 52.8 degrees very early in the
-  clip; re-inspection confirmed that was settling-window noise, not a
-  second real segment as first guessed — it's gone now that settling uses
-  a robust (median) baseline instead of a bare running minimum.
+adults with fall risk) and wasn't tested before. Also the clip that
+caught a real regression during a second hardening pass: its opening
+~1.2s has landmark visibility too low for BOTH candidate sides throughout
+the ENTIRE settling window (the walker/demonstrator occludes the body
+early on), so settling produces zero calibration samples for either side.
+An earlier version of the drift-below-baseline guard didn't distinguish
+"a genuinely calibrated floor" from "the old uncalibrated fallback" and
+ended up permanently locking a wrong, too-high floor (seeded from the
+first standing frame) once that fallback kicked in — rejecting every
+later genuinely-low seated reading and dropping the rep count to 0 with
+220 frames wrongly rejected. Fixed by gating that guard on a
+`baseline_calibrated` flag that's only true once settling actually
+calibrated real samples, so a candidate with no settling data correctly
+falls back to the old, less-defended-but-self-correcting behavior instead
+of a permanently broken one. Current (verified) result via
+`run_batch_validation()`:
+- 2 reps detected, 0 rejected frames. Rep 2 (standing_angle 167.3, peak
+  velocity 26.9 deg/s) is a clean, genuinely slow/controlled stand —
+  `Good` fires correctly, no false cues. Rep 1 (standing_angle 52.8) is
+  the same early anomaly noted before these fixes; still present, not
+  claimed to be resolved by this pass — most likely a different segment
+  of the source demo (a mid-transfer or seated position caught early in
+  the clip before the subject is fully framed), not sensor noise, since
+  both hip and knee angles agree with each other at that value.
 - No crash or landmark failure from the walker being held in both hands —
   pose detection tracked hip/knee/shoulder normally despite the
   assistive device. This is a genuinely useful data point for Sunday if
@@ -112,6 +139,76 @@ All three are covered by new tests in `test_rehab_sit_to_stand.py`
 correctness): the AMI/jerk classifier was firing during genuinely
 motionless rest periods due to landmark micro-jitter alone — gated behind a
 minimum real-motion floor so only actual physical movement can trigger it.
+
+### Second hardening pass — findings from a deeper code review
+A follow-up two-round code review (12 finder angles, 14 verified findings)
+went past the fixes above and found real gaps left by them. Fixed, each
+with a regression test in `test_rehab_sit_to_stand.py` (53 passing total):
+1. **The `/api/sit-to-stand/upload` route never got any settling treatment
+   at all** — it fed frames straight into `process_frame` from frame 0,
+   silently reintroducing the exact uncalibrated-floor bug item 2 above was
+   supposed to fix, just through a different, untested code path. Fixed by
+   introducing `RehabSitToStandSession.route_frame` — one settling choke
+   point every frame source (live stream, batch validation, `/upload`) now
+   goes through, instead of each reimplementing (or, for `/upload`,
+   omitting) its own settling logic.
+2. **The settling window (0.5s) was barely longer than the documented
+   real-footage contamination duration (~0.3-0.5s)**, so a slightly worse
+   clip than the one test video could have its calibration median computed
+   almost entirely from bad frames. Widened to 1.0s and made a proper class
+   constant (`BATCH_SETTLING_WINDOW_S`) instead of a local buried in one
+   function.
+3. **The settling window itself had zero defense against the same class of
+   glitch the active-tracking guards exist to catch** — a per-sample
+   outlier check was added to `observe_baseline` (magnitude vs. a short
+   recent window, since settling doesn't thread timestamps through for a
+   velocity check).
+4. **A glitch confined to ONE joint (not the composite minimum) passed
+   every guard untouched** and could land verbatim in a rep's clinical
+   `hip_angle_deg`/`knee_angle_deg` output — the guards only ever checked
+   `min(hip, knee)`. Fixed by applying the same velocity guard to each
+   joint individually.
+5. **A non-monotonic timestamp (dt<=0) silently skipped the velocity guard
+   entirely** instead of being treated as suspect itself. Now rejected
+   outright.
+6. **The median-of-3 outlier filter used by every active-tracking frame
+   started genuinely empty right when tracking begins**, a real regression
+   from how settling calibration used to feed it directly — `finalize_baseline`
+   now primes it from the tail of the settling samples.
+7. **A race between a concurrent `/advance` request and the live
+   MJPEG stream's settling-transition logic** could reset a session's
+   tracking state mid-frame (Flask runs `threaded=True`, and `/advance`
+   mutates the same session object the stream loop holds a reference to).
+   Fixed with a lock around the specific sequences that need to stay
+   atomic.
+8. **`live_status`'s settling flag was computed independently from
+   `route_frame`'s actual state**, via its own duplicated wall-clock
+   formula — able to report `settling: False` (and expose uncalibrated
+   defaults) before calibration had actually committed. Now reads the same
+   shared state `route_frame` maintains.
+9. Rejected-frame counts were invisible everywhere — no way to tell "fewer
+   reps because of a real short session" from "fewer reps because frames
+   are silently being dropped." Added `rejected_frame_count` to
+   `final_report()`.
+
+**A real regression was caught and fixed during this pass's own
+verification**, not just review: item 4/the tightened absolute-floor guard
+initially caused `sit_to_stand_walker.mp4` to drop from 2 reps to 0, with
+220 of ~1843 frames wrongly rejected — see that clip's section above for
+the full explanation (a candidate side with zero settling samples got its
+floor guard trusting an uncalibrated fallback value, which then permanently
+locked out every later genuinely-low reading). Fixed by gating the floor
+guard on a `baseline_calibrated` flag, not merely "is the floor a finite
+number."
+
+**Known, accepted, not fixed:** re-running `sit_to_stand_test.mp4` (the
+timed max-reps clip) after this pass shows 11 reps instead of the earlier
+14 — most likely a more accurate calibrated floor now correctly declining
+to count a marginal sway as a distinct rep, not a new bug, but not
+independently confirmed by manual frame review either. See that clip's own
+section above; its rep count was already the least clinically meaningful
+number in this repo (a 30-second max-reps stress test, not the controlled
+single-rep use case this app targets).
 
 **Update:** `seated_knee_extension_real.mp4` (added later) IS real footage of
 this exact exercise, properly side-on — use that one first. The squat clips

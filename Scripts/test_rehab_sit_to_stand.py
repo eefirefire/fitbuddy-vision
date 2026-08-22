@@ -29,6 +29,33 @@ from rehab_sit_to_stand import (
 )
 
 
+class _FakeFullPoseLandmarks:
+    """A pose with real left/right shoulder/hip/knee/ankle landmarks, for
+    exercising RehabSitToStandSession.route_frame/process_frame end-to-end
+    (unlike _FakePoseLandmarks above, which only has shoulder/hip -- enough
+    for CameraAlignmentChecker but not for joint-angle extraction).
+
+    Uses two fixed poses (a shoulder offset that bends the hip vs. a
+    straight vertical line) rather than deriving exact landmark positions
+    from a target angle via trigonometry -- these tests only need
+    real-vs-fake landmark data to exercise the settling/routing plumbing,
+    not precise angle values, so exact degrees don't matter here."""
+
+    _BENT = {"shoulder": (0.55, 0.20), "hip": (0.50, 0.50), "knee": (0.50, 0.75), "ankle": (0.50, 0.95)}
+    _STRAIGHT = {"shoulder": (0.50, 0.20), "hip": (0.50, 0.50), "knee": (0.50, 0.75), "ankle": (0.50, 0.95)}
+
+    def __init__(self, pose: str = "straight", side: str = "right"):
+        blank = _FakeLandmark(0.0, 0.0)
+        self.landmark = [blank] * 33
+        points = self._BENT if pose == "bent" else self._STRAIGHT
+        sides = ("left", "right") if side == "both" else (side,)
+        for s in sides:
+            prefix = "LEFT" if s == "left" else "RIGHT"
+            for joint in ("shoulder", "hip", "knee", "ankle"):
+                idx = getattr(mp_pose.PoseLandmark, f"{prefix}_{joint.upper()}").value
+                self.landmark[idx] = _FakeLandmark(*points[joint])
+
+
 class _FakeLandmark:
     def __init__(self, x, y):
         self.x, self.y, self.z, self.visibility = x, y, 0.0, 1.0
@@ -327,8 +354,14 @@ def test_implausible_glitch_spike_does_not_corrupt_observed_min():
     # Simulate the settling/calibration window a real session runs before
     # rep tracking starts -- this is what establishes the anchor
     # _CandidateBodySideTrack.MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG uses.
+    # finalize_settling() must actually run (not just observe_baseline) --
+    # a previous version of this test omitted that call, so its settling
+    # simulation was silently inert and _observed_min_angle was actually
+    # established by the ramp's own running-min instead, by coincidence
+    # landing on the same value and masking the gap.
     for _ in range(5):
         track.transition_tracker.observe_baseline(95.0)
+    track.finalize_settling()
     # Genuine rise to a real stand (95 -> 172), then hold near standing --
     # matches the real footage pattern this regression is modeling.
     for a in _ramp(95, 172, 15):
@@ -385,3 +418,247 @@ def test_genuine_slow_stutter_still_fires_slow_down():
     for ts, a in zip(t, stutter):
         track.push_frame(a, a, ts)
     assert track.cue.text == "Slow down", f"a genuine stutter should still fire Slow down, got: {track.cue.text}"
+
+
+# ── Regression: settling calibration must prime the median-of-3 outlier
+# filter, not just observed_min_angle ────────────────────────────────────
+# Found via code review: observe_baseline used to feed _update_observed_min
+# directly (pre-populating _recent_angles with real settling samples by the
+# time active tracking began). After switching to a settling-window median
+# (finalize_baseline), _recent_angles started genuinely empty at the
+# settling/active boundary, so the first 1-2 real check_for_peak calls
+# computed a median over just 1-2 values -- effectively no outlier
+# protection right when tracking starts, despite real settling data
+# existing to seed it with.
+
+def test_finalize_baseline_primes_median_filter_for_immediate_protection():
+    tracker = StandTransitionTracker()
+    for angle in [95.0, 96.0, 94.0]:
+        tracker.observe_baseline(angle)
+    tracker.finalize_baseline()
+    assert len(tracker._recent_angles) == 3, (
+        "finalize_baseline should seed _recent_angles from the settling "
+        f"samples, got {list(tracker._recent_angles)}"
+    )
+
+    # With the filter primed, a single wild outlier on the very FIRST real
+    # tracking frame must not corrupt the floor -- this is the actual
+    # end-to-end symptom the priming exists to prevent.
+    tracker.check_for_peak(30.0, 0.0)  # a one-frame glitch, right at the boundary
+    assert tracker._observed_min_angle > 50, (
+        "a single-frame outlier on the first post-settling frame corrupted "
+        f"the floor: {tracker._observed_min_angle}"
+    )
+
+
+# ── Regression: the settling window itself needs outlier rejection too ──────
+# Found via code review: both push_frame rejection guards only apply to the
+# ACTIVE-tracking path -- observe_baseline had zero defense, even though the
+# real glitch this module was hardened against could just as easily occur
+# during the settling window (a clip's opening frames) as after it.
+
+def test_settling_rejects_a_sample_wildly_inconsistent_with_recent_ones():
+    tracker = StandTransitionTracker()
+    for angle in [95.0, 96.0, 94.0, 95.0]:
+        tracker.observe_baseline(angle)
+    # A wild single-sample glitch during settling itself.
+    tracker.observe_baseline(2.0)
+    tracker.observe_baseline(95.0)
+    tracker.finalize_baseline()
+    assert tracker._observed_min_angle > 50, (
+        "an implausible settling-window sample corrupted the calibrated "
+        f"baseline: {tracker._observed_min_angle}"
+    )
+
+
+def test_settling_still_accepts_genuine_gradual_movement():
+    # The settling-window guard must not be so strict it rejects a person
+    # genuinely still adjusting position during settling.
+    tracker = StandTransitionTracker()
+    for angle in [110.0, 105.0, 100.0, 96.0, 93.0]:
+        tracker.observe_baseline(angle)
+    tracker.finalize_baseline()
+    # All 5 samples should have been accepted (none exceed
+    # MAX_BASELINE_SAMPLE_DEVIATION_DEG relative to their recent window),
+    # so the calibrated baseline should be their median (100.0), not
+    # something higher from samples being wrongly dropped.
+    assert tracker._observed_min_angle == pytest.approx(100.0), (
+        f"genuine gradual settling movement was over-rejected: {tracker._observed_min_angle}"
+    )
+
+
+# ── Regression: a glitch confined to ONE joint must not slip past the
+# composite-only rejection guards ────────────────────────────────────────
+# Found via code review: both push_frame guards check only the composite
+# standing_angle = min(hip, knee). A glitch on the joint that ISN'T
+# currently the composite minimum is invisible to them, and the raw
+# glitched value can be captured verbatim into a rep's clinical output.
+
+def test_glitch_confined_to_non_limiting_joint_is_rejected():
+    track = _CandidateBodySideTrack()
+    t = 0.0
+    # Genuine rise where hip is the limiting (smaller) joint throughout.
+    for hip_a, knee_a in zip(_ramp(95, 150, 15), _ramp(95, 178, 15)):
+        track.push_frame(hip_a, knee_a, t)
+        t += 1 / 30
+    # A single-frame glitch confined to knee_angle -- hip_angle (still the
+    # composite minimum) is completely normal, so a composite-only guard
+    # would see nothing wrong.
+    result = track.push_frame(151.0, 400.0, t)
+    assert result.get("rejected_implausible_jump") is True, (
+        f"a knee-only implausible jump was not rejected: {result}"
+    )
+    # And it must never have reached the peak-tracking state.
+    assert track._knee_at_running_peak is None or track._knee_at_running_peak < 200, (
+        f"glitched knee_angle leaked into _knee_at_running_peak: {track._knee_at_running_peak}"
+    )
+
+
+# ── Regression: a non-monotonic timestamp must be rejected, not silently
+# skip the velocity guard entirely ───────────────────────────────────────
+
+def test_non_monotonic_timestamp_is_rejected_not_silently_passed():
+    track = _CandidateBodySideTrack()
+    track.push_frame(150.0, 150.0, 5.0)
+    # A duplicate timestamp (dt == 0) with a wildly different angle used to
+    # completely bypass the velocity guard (the `if dt > 0` check simply
+    # skipped, letting the frame through unchecked).
+    result = track.push_frame(10.0, 10.0, 5.0)
+    assert result.get("rejected_non_monotonic_timestamp") is True, (
+        f"a duplicate/non-monotonic timestamp was not rejected: {result}"
+    )
+    assert track.rejected_frame_count == 1
+
+
+def test_out_of_order_timestamp_is_also_rejected():
+    track = _CandidateBodySideTrack()
+    track.push_frame(150.0, 150.0, 5.0)
+    result = track.push_frame(10.0, 10.0, 4.0)  # earlier than the last accepted frame
+    assert result.get("rejected_non_monotonic_timestamp") is True
+
+
+# ── Documents a known scoping limit: the velocity guard is only an
+# effective defense against a near-single-frame teleport ────────────────
+# Found via code review: _last_accepted_timestamp only advances on accept,
+# so dt against it grows during a run of rejections, and implied_speed =
+# |delta| / dt shrinks for the same angle change as dt grows. Investigated
+# capping the effective dt to stop this, but the fix doesn't actually work:
+# given MAX_PLAUSIBLE_VELOCITY_DEG_S=2500 and the anatomical maximum
+# possible delta (180 degrees), no within-range value can ever exceed this
+# guard once dt is more than ~0.07s regardless of any cap -- the velocity
+# guard is, by construction, already scoped to near-single-frame gaps
+# only. Sustained/gradual drift (staleness included) is caught instead by
+# MAX_DRIFT_BELOW_SETTLED_BASELINE_DEG, which is time-independent. This
+# test documents that scoping rather than asserting a fix that can't work.
+
+def test_velocity_guard_only_catches_near_single_frame_jumps():
+    track = _CandidateBodySideTrack()
+    track.push_frame(150.0, 150.0, 0.0)
+    # A genuine single-frame-interval gap: the full anatomical range in
+    # ~1/30s is caught.
+    result = track.push_frame(-30.0, -30.0, 1 / 30)
+    assert result.get("rejected_implausible_jump") is True
+
+    track2 = _CandidateBodySideTrack()
+    track2.push_frame(150.0, 150.0, 0.0)
+    # The same magnitude of change over a real multi-second gap is
+    # legitimately plausible (a real slow movement could cover this range
+    # in that time) and is correctly NOT treated as a velocity violation --
+    # it's the absolute-floor guard's job to catch an implausible RESULT,
+    # not the velocity guard's job to catch every large change over a long
+    # span.
+    result2 = track2.push_frame(-30.0, -30.0, 10.0)
+    assert result2.get("rejected_implausible_jump") is not True
+
+
+# ── Regression: rejected frames must be counted somewhere, not silently
+# dropped with zero observability ────────────────────────────────────────
+
+def test_rejected_frames_are_counted_and_surfaced_in_final_report():
+    session = RehabSitToStandSession()
+    session.advance_state()  # -> RECORD
+    track = session._candidates["right"]
+    # Give "right" enough real range of motion that _decide_tracked_
+    # landmark_side picks it over "left" (untouched, 0 ROM) -- otherwise
+    # finalize_recording would report on the wrong (unused) candidate.
+    for a in _ramp(95, 172, 15):
+        track.push_frame(a, a, len(track._angle_samples) / 30)
+    track.push_frame(400.0, 400.0, track._last_accepted_timestamp + 0.03)  # implausible jump, rejected
+    session.advance_state()  # -> ANALYZE (finalizes recording)
+    report = session.final_report()
+    assert "rejected_frame_count" in report
+    assert report["rejected_frame_count"] >= 1
+
+
+# ── Regression: settling must be a single choke point ALL frame sources
+# go through, not reimplemented (or omitted) per caller ──────────────────
+# Found via code review: the /upload Flask route fed frames straight into
+# process_frame from frame 0 with no settling step at all, reintroducing
+# the exact uncalibrated-floor bug the settling mechanism exists to fix.
+# route_frame is now the one method every frame source must call.
+
+def test_route_frame_settles_before_tracking_starts():
+    session = RehabSitToStandSession()
+    session.advance_state()  # -> RECORD
+    settling_window_s = 0.5
+
+    # First frame establishes the settling window's start; frames within
+    # the window must not reach process_frame/push_frame at all.
+    contaminated = _FakeFullPoseLandmarks(pose="bent", side="both")
+    for i in range(5):
+        result = session.route_frame(contaminated, 640, 480, i * 0.05, settling_window_s)
+        assert result == {}, "a frame during the settling window should produce no tracking result"
+
+    track = session._candidates["right"]
+    assert track.transition_tracker._observed_min_angle == float("inf"), (
+        "settling frames should accumulate into _baseline_samples, not observed_min_angle, until finalize"
+    )
+
+    # A frame past the settling window should finalize calibration and
+    # start real tracking.
+    real_frame = _FakeFullPoseLandmarks(pose="straight", side="both")
+    session.route_frame(real_frame, 640, 480, settling_window_s + 0.01, settling_window_s)
+    assert track.transition_tracker._observed_min_angle != float("inf"), (
+        "the first post-settling frame should have triggered finalize_settling"
+    )
+
+
+def test_route_frame_is_the_only_settling_implementation_upload_and_batch_share():
+    # Direct proof that upload_video and run_batch_validation both route
+    # through the same method (rather than each hand-rolling their own
+    # settling branch) -- inspects the source rather than re-running a full
+    # video, since that's expensive; this is a structural regression guard.
+    import inspect
+    import rehab_sit_to_stand as sts
+    upload_src = inspect.getsource(sts.upload_video)
+    batch_src = inspect.getsource(sts.run_batch_validation)
+    assert "route_frame" in upload_src, "upload_video must route through route_frame, not a bespoke settling branch"
+    assert "route_frame" in batch_src, "run_batch_validation must route through route_frame, not a bespoke settling branch"
+
+
+# ── Regression: live_status's settling flag must not diverge from what
+# route_frame/finalize_settling actually did ─────────────────────────────
+# Found via code review: live_status used to recompute its OWN independent
+# wall-clock settling formula instead of reading route_frame's state, so it
+# could report settling:False (and expose uncalibrated defaults) before
+# finalize_settling had actually run, if pose detection dropped out right
+# at the grace-period boundary.
+
+def test_is_settling_reflects_route_frame_state_not_a_separate_clock():
+    session = RehabSitToStandSession()
+    session.advance_state()  # -> RECORD
+    # Before any frame has been routed, is_settling must not claim settling
+    # ended just because wall-clock time has passed -- there is no
+    # calibration to have "ended".
+    assert session.is_settling(time.time() + 100) is True
+
+    frame = _FakeFullPoseLandmarks(pose="bent", side="both")
+    session.route_frame(frame, 640, 480, 0.0, 0.5)
+    assert session.is_settling(0.1) is True  # still within the 0.5s window
+    assert session._settling_finalized is False  # not yet -- window hasn't ended
+
+    # A frame whose timestamp is past the window actually ends settling and
+    # triggers finalize_settling as a side effect of route_frame itself.
+    session.route_frame(frame, 640, 480, 0.6, 0.5)
+    assert session.is_settling(0.6) is False
+    assert session._settling_finalized is True
