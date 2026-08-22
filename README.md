@@ -14,8 +14,9 @@ FitBuddy runs two parallel pipelines, each assigned to the compute tier appropri
 |---|---|---|---|
 | **Exercise Mode** | Video upload | Cloud (Gemini Vision) | Structured squat coaching — rep count, faults, coaching notes |
 | **Rehab Mode** | Webcam or video upload | On-device (MediaPipe) | Real-time joint angle, rep count, extension deficit, coaching cues |
+| **Sit-to-Stand Mode** | Webcam or video upload | On-device (MediaPipe) | Rep count, standing deficit, rise smoothness, coaching cues |
 
-No video is stored on any server. Exercise mode sends 15 keyframes extracted client-side in the browser; rehab mode never leaves the device.
+No video is stored on any server. Exercise mode sends 15 keyframes extracted client-side in the browser; rehab and sit-to-stand mode never leave the device.
 
 One-page overview: [`poster/fitbuddy_poster.pdf`](poster/fitbuddy_poster.pdf)
 
@@ -84,8 +85,8 @@ EXERCISE MODE
 Scripts/
   rehab_knee_extension.py   — Flask server, MediaPipe pipeline, rehab session logic
   rehab_sit_to_stand.py     — standalone Flask server (port 5052), same tracking
-                               approach applied to sit-to-stand; API/batch-
-                               validation only, no frontend UI wired up yet
+                               approach applied to sit-to-stand, live camera +
+                               upload UI wired up in squat-frontend
   rehab_auth.py             — account system (salted hashes, session cookies)
   server.py                 — FastAPI server, Gemini exercise analysis
   test_rehab_knee_extension.py — 20 unit tests for the rehab pipeline
@@ -97,7 +98,8 @@ squat-frontend/
   src/pages/
     Landing.jsx             — mode selector
     Dashboard.jsx           — exercise mode upload + Gemini feedback
-    RehabPanel.jsx          — live rehab tracking UI
+    RehabPanel.jsx          — live rehab tracking UI (knee extension)
+    SitToStandPanel.jsx     — live rehab tracking UI (sit-to-stand)
     Auth.jsx                — login / register
     Intake.jsx              — pre-exercise safety intake
 
@@ -120,7 +122,7 @@ cd Scripts
 pip install -r requirements.txt
 python rehab_knee_extension.py   # rehab server → localhost:5050
 python server.py                 # exercise server (optional)
-python rehab_sit_to_stand.py     # sit-to-stand server, API/batch only, no UI (optional) → localhost:5052
+python rehab_sit_to_stand.py     # sit-to-stand server (optional) → localhost:5052
 ```
 
 **Frontend:**
@@ -134,9 +136,9 @@ npm run dev                      # → localhost:5173
 
 ---
 
-## Safety design (Rehab Mode)
+## Safety design (Rehab & Sit-to-Stand Mode)
 
-Rehab Mode requires account login and a pre-exercise intake before every session. Clinical thresholds are sourced from published guidance:
+Both modes require account login and a pre-exercise intake before every session (they share one user database and login session). Clinical thresholds are sourced from published guidance:
 
 | Signal | Threshold | Source |
 |---|---|---|
