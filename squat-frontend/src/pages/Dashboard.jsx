@@ -2,11 +2,13 @@ import { useState, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { analyzeLift } from '../analyzeService'
 import RehabPanel from './RehabPanel'
+import SitToStandPanel from './SitToStandPanel'
 
 const MODE_LABELS = {
   ergonomic: '💼 Ergonomic Mode',
   exercise: '🏆 Exercise Mode',
   rehab: '🏥 Rehab Mode',
+  'sit-to-stand': '🪑 Sit-to-Stand Mode',
 }
 
 export default function Dashboard() {
@@ -83,7 +85,7 @@ export default function Dashboard() {
       </nav>
 
       {/* Main grid */}
-      {mode === 'rehab' ? <RehabPanel /> : (
+      {mode === 'rehab' ? <RehabPanel /> : mode === 'sit-to-stand' ? <SitToStandPanel /> : (
       <div className="dash-grid">
         {/* Left: video panel */}
         <div className="dash-card video-panel">

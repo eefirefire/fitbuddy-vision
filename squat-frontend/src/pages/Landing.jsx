@@ -29,6 +29,15 @@ const MODES = [
     focus: 'Focus: Medical Rehab',
     points: ['Joint symmetry', 'Range of motion', 'Smooth velocity'],
   },
+  {
+    id: 'sit-to-stand',
+    icon: '🪑',
+    tabLabel: 'Sit-to-Stand',
+    headline: ['Track Your', 'Sit-to-Stand.'],
+    ctaNoun: 'Sit-to-Stand Session',
+    focus: 'Focus: Fall-Risk Screening',
+    points: ['Rep count', 'Standing deficit', 'Rise smoothness'],
+  },
 ]
 
 function SquatIllustration() {
