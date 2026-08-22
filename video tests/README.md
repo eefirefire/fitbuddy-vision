@@ -1,11 +1,84 @@
 # Video Tests
 
 Real, unscripted video clips used to regression-test the live rehab
-pipeline (`Scripts/rehab_knee_extension.py`) end-to-end — real MediaPipe
-pose detection, real human movement, run through the actual pipeline code
-instead of synthetic angle arrays. Built while debugging the Tier 1 live
-rep-counter/voice-cue feature; kept here so the same scenarios can be
-re-checked after future changes without re-hunting for source clips.
+pipelines (`Scripts/rehab_knee_extension.py` and `Scripts/
+rehab_sit_to_stand.py`) end-to-end — real MediaPipe pose detection, real
+human movement, run through the actual pipeline code instead of synthetic
+angle arrays. Built while debugging the Tier 1 live rep-counter/voice-cue
+feature; kept here so the same scenarios can be re-checked after future
+changes without re-hunting for source clips.
+
+## Sit-to-stand
+
+`rehab_sit_to_stand.py` went through three rounds of code review plus a
+brief removal/restoration (see git history around commits `ab592a9` through
+`48c3974` and this file's history for the blow-by-blow). Final state, after
+closing the last two known concurrency gaps:
+
+- **Two frame sources (live stream vs. `/upload`/batch) can no longer
+  corrupt each other's settling calibration** even if both somehow fed the
+  same shared session — `route_frame` now takes a `source` tag and ignores
+  any frame from a source that didn't claim the session first, since the
+  two sources use incompatible timestamp bases (wall-clock vs.
+  video-relative).
+- **`/upload` now holds `_session_lock` for the WHOLE request**, not just
+  per-frame — a concurrent `/advance` can no longer land between two
+  frames of a long upload and reset tracking state mid-video. This blocks
+  other requests for the duration of an upload, which is the correct
+  tradeoff for this module's single-shared-session design (nothing should
+  be mutating session state while a user-initiated upload is still being
+  processed).
+
+59 tests passing. Re-verified against both real test videos below with
+these fixes in place — results are identical to the prior (already-hardened)
+run, confirming these last two fixes closed real gaps without changing any
+actual tracking behavior:
+
+### `sit_to_stand_controlled.mp4`
+Source: "Sit to Stand Strengthening Exercise" by Signature Medical Group /
+Dave Reddy (YouTube, ~4.5min, downloaded via yt-dlp for local testing only).
+A trainer demoing controlled reps with narration between them. Run through
+`run_batch_validation()`:
+- 6 reps detected, 6 rejected frames (real MediaPipe tracking glitches
+  correctly caught and excluded, not silently corrupting the session).
+  Rep 1 (172.1°) is a clean genuine stand. Reps 2-4 have long
+  `eccentric_duration_s` values (97s, 34.5s, 13.28s) and are flagged
+  jerky — confirmed via direct frame-trace inspection to be real: the
+  trainer stands and talks between reps rather than sitting back down,
+  and the natural weight-shifting genuinely isn't smooth motion, even
+  though it isn't clinically meaningful. Reps 5-6 (~43-50°) are a
+  different segment of the source video, not full stands.
+- Voice-cue behavior hand-verified frame-by-frame: `Good` fires correctly
+  on rep 1, `Slow down` fires exactly once per jerky rep, nothing fires
+  falsely.
+- Zero crashes, no NaN propagation, across the full ~275s clip.
+
+### `sit_to_stand_walker.mp4`
+Source: "How to Sit Down and Stand Up with a Walker" by RegisteredNurseRN
+(YouTube, ~77s, downloaded via yt-dlp for local testing only). Relevant
+because walker use is common in this app's actual target population.
+- 2 reps detected, 0 rejected frames. Rep 2 (167.3°, peak velocity
+  26.9 deg/s) is a clean, genuinely slow/controlled stand — `Good` fires
+  correctly. Rep 1 (52.8°) is a real but non-representative early segment
+  of the source demo (a mid-transfer or seated position caught before the
+  subject is fully framed), not sensor noise.
+- No crash or landmark failure from the walker being held in both hands —
+  pose detection tracked hip/knee/shoulder normally despite the assistive
+  device.
+
+This clip is also the one that caught the most serious bug found across
+all three review rounds: a candidate side with zero confident-landmark
+settling samples (the walker/demonstrator occludes the body for the whole
+~1.2s settling window) once caused a floor-detection guard to trust an
+uncalibrated fallback value as if it were real, permanently locking out
+every later genuinely-low reading and dropping this clip's rep count to 0
+with 220 of ~1843 frames wrongly rejected. Fixed by gating that guard on a
+`baseline_calibrated` flag that's only true once settling actually
+calibrated real samples — a candidate with no settling data now correctly
+falls back to unguarded (but self-correcting) behavior instead of a
+permanently broken one.
+
+## Seated knee extension
 
 **Update:** `seated_knee_extension_real.mp4` (added later) IS real footage of
 this exact exercise, properly side-on — use that one first. The squat clips

@@ -83,9 +83,13 @@ EXERCISE MODE
 ```
 Scripts/
   rehab_knee_extension.py   — Flask server, MediaPipe pipeline, rehab session logic
+  rehab_sit_to_stand.py     — standalone Flask server (port 5052), same tracking
+                               approach applied to sit-to-stand; API/batch-
+                               validation only, no frontend UI wired up yet
   rehab_auth.py             — account system (salted hashes, session cookies)
   server.py                 — FastAPI server, Gemini exercise analysis
   test_rehab_knee_extension.py — 20 unit tests for the rehab pipeline
+  test_rehab_sit_to_stand.py   — 59 unit tests for the sit-to-stand pipeline
   benchmark_rehab_pipeline.py  — FPS / latency benchmark
   requirements.txt
 
@@ -116,6 +120,7 @@ cd Scripts
 pip install -r requirements.txt
 python rehab_knee_extension.py   # rehab server → localhost:5050
 python server.py                 # exercise server (optional)
+python rehab_sit_to_stand.py     # sit-to-stand server, API/batch only, no UI (optional) → localhost:5052
 ```
 
 **Frontend:**
