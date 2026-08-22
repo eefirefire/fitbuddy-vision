@@ -239,8 +239,8 @@ export function classifyRepTrend(reps) {
 // Drives the live ROM gauge during an active recording. Deliberately generic
 // (angle + a [min, max] target range, both supplied by the backend's
 // /live-status payload) rather than knee-extension-specific, so a future
-// movement (e.g. sit-to-stand) can reuse this same gauge component just by
-// reporting its own target_range — no gauge-side changes needed.
+// exercise can reuse this same gauge component just by reporting its own
+// target_range — no gauge-side changes needed.
 export function classifyLiveRom(angle, targetRange) {
   if (angle === null || angle === undefined || !targetRange) {
     return { pct: 0, color: INFO, label: '—' }

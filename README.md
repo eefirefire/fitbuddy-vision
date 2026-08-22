@@ -17,6 +17,8 @@ FitBuddy runs two parallel pipelines, each assigned to the compute tier appropri
 
 No video is stored on any server. Exercise mode sends 15 keyframes extracted client-side in the browser; rehab mode never leaves the device.
 
+One-page overview: [`poster/fitbuddy_poster.pdf`](poster/fitbuddy_poster.pdf)
+
 ---
 
 ## Validated accuracy
@@ -97,6 +99,10 @@ squat-frontend/
 
 eda/
   Validation/               — raw validation data, chart generation scripts
+
+video tests/
+  README.md                 — real (not synthetic) footage used to regression-
+                               test the rehab pipeline end-to-end, with results
 ```
 
 ---
