@@ -338,20 +338,6 @@ class StandTransitionTracker:
     # movement; a rolling median has no such stall condition).
     MIN_ANGLE_MEDIAN_WINDOW = 3
 
-    # Above this deviation from the recently-observed settling samples, an
-    # individual settling-window reading is dropped before it ever reaches
-    # _baseline_samples. Added because the two rejection guards in
-    # _CandidateBodySideTrack.push_frame only cover the ACTIVE-tracking
-    # path -- the settling window itself had zero defense against the same
-    # class of glitch this module was hardened against, and the diff's own
-    # comments identify a clip's opening frames (i.e. the settling window)
-    # as the highest-risk period for exactly this glitch. This can't reuse
-    # the velocity-based guard (settling doesn't thread timestamps through),
-    # so it's a simpler magnitude-vs-recent-median check instead -- generous
-    # enough to tolerate genuine settling-period movement (a person still
-    # adjusting position) while still catching a multi-degree collapse.
-    MAX_BASELINE_SAMPLE_DEVIATION_DEG = 30.0
-
     def __init__(self):
         self._armed = True
         self._running_max_angle = float("-inf")
@@ -359,7 +345,6 @@ class StandTransitionTracker:
         self._recent_angles = deque(maxlen=self.MIN_ANGLE_MEDIAN_WINDOW)
         self._peak_timestamp = None
         self._baseline_samples: list[float] = []
-        self._baseline_recent = deque(maxlen=self.MIN_ANGLE_MEDIAN_WINDOW)
         # True only once finalize_baseline has actually summarized REAL
         # settling samples into _observed_min_angle. Distinct from
         # "_observed_min_angle != inf", which can also become true through
@@ -397,16 +382,20 @@ class StandTransitionTracker:
         subject's real range -- a running min would permanently anchor the
         entire session's rep-detection floor to that one bad artifact.
 
-        Also rejects individual samples wildly inconsistent with recently-
-        seen settling samples before they ever reach _baseline_samples --
-        see MAX_BASELINE_SAMPLE_DEVIATION_DEG."""
+        Deliberately does NOT reject individual samples during
+        accumulation (a per-sample "deviation from recent settling
+        samples" guard was tried and reverted -- confirmed via code
+        review to self-poison: if the very first sample is itself the
+        contamination, every later genuine sample gets judged against
+        that one bad reference and rejected too, with no way to recover,
+        which is worse than doing nothing). Protection against
+        contamination comes entirely from finalize_baseline's
+        whole-window MEDIAN below, which only requires a majority of
+        samples to be good, not every individual one -- a real
+        statistical property a small per-sample reference window can't
+        replicate without the self-poisoning failure mode."""
         if np.isnan(angle):
             return
-        if len(self._baseline_recent) >= 2:
-            recent_median = float(np.median(self._baseline_recent))
-            if abs(angle - recent_median) > self.MAX_BASELINE_SAMPLE_DEVIATION_DEG:
-                return
-        self._baseline_recent.append(angle)
         self._baseline_samples.append(angle)
 
     def finalize_baseline(self) -> None:
@@ -1252,9 +1241,21 @@ _session = RehabSitToStandSession()
 # without a lock, an /advance request landing between the generator's
 # settling check and its frame-processing call feeds a live frame into
 # freshly-reset, never-settled candidates, silently reintroducing the
-# uncalibrated-floor bug this module was hardened against. Held only
-# around the specific mutate-or-read-then-act sequences that need to stay
-# atomic, not around every request.
+# uncalibrated-floor bug this module was hardened against. Also held
+# around clip_summary's and upload_video's read-candidates-then-
+# finalize_recording sequences (an earlier version of this lock only
+# covered _mjpeg_generator and /advance, leaving those two routes able to
+# read/finalize a _candidates dict that /advance had just reset out from
+# under them, mid-request). Held only around the specific mutate-or-read-
+# then-act sequences that need to stay atomic, not around every request --
+# notably NOT held for upload_video's entire per-frame loop (only each
+# individual route_frame call), so a concurrent /advance can still land
+# BETWEEN two frames of a long upload and reset state mid-video; closing
+# that fully would need holding the lock for the whole upload duration,
+# which would block /live-status and other requests for as long as the
+# upload takes. Accepted as a known, lower-severity residual gap given
+# this module's existing single-global-session design already assumes
+# one user at a time.
 _session_lock = threading.Lock()
 
 _pose_model = mp_pose.Pose(
@@ -1429,8 +1430,17 @@ def upload_video():
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-    winning_track = _session._candidates[_session._decide_tracked_landmark_side()]
-    _session.finalize_recording()
+    # Locked -- see _session_lock's docstring. The per-frame lock above
+    # only protects each individual route_frame call; without also locking
+    # this read-candidates-then-finalize sequence, a concurrent /advance
+    # landing here would reset _candidates first, silently making
+    # winning_track point at fresh empty tracks and finalize_recording()
+    # a no-op (state no longer RECORD) -- reporting 0 reps for a fully
+    # processed upload with no error. Same sequence /advance and
+    # clip_summary must also treat as atomic.
+    with _session_lock:
+        winning_track = _session._candidates[_session._decide_tracked_landmark_side()]
+        _session.finalize_recording()
 
     return jsonify({
         "side": _session._detected_landmark_side,
@@ -1451,8 +1461,12 @@ def clip_summary():
     if _session.state != SitToStandState.RECORD:
         return jsonify({"error": "No active recording to summarise."}), 400
 
-    winning_track = _session._candidates[_session._decide_tracked_landmark_side()]
-    _session.finalize_recording()
+    # Locked -- see _session_lock's docstring: this reads _candidates and
+    # calls finalize_recording(), the same sequence /advance protects
+    # against interleaving with a concurrent frame from _mjpeg_generator.
+    with _session_lock:
+        winning_track = _session._candidates[_session._decide_tracked_landmark_side()]
+        _session.finalize_recording()
 
     return jsonify({
         "side": _session._detected_landmark_side,

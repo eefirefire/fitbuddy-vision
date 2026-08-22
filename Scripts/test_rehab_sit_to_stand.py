@@ -451,13 +451,18 @@ def test_finalize_baseline_primes_median_filter_for_immediate_protection():
     )
 
 
-# ── Regression: the settling window itself needs outlier rejection too ──────
-# Found via code review: both push_frame rejection guards only apply to the
-# ACTIVE-tracking path -- observe_baseline had zero defense, even though the
-# real glitch this module was hardened against could just as easily occur
-# during the settling window (a clip's opening frames) as after it.
+# ── Regression: the settling window's contamination protection is the
+# whole-window MEDIAN, not a per-sample rejection guard ─────────────────────
+# A per-sample "deviation from recent settling samples" guard was tried and
+# reverted: if the very first settling sample is itself the contamination,
+# every later genuine sample gets judged against that one bad reference and
+# rejected too, with no way to recover -- confirmed via code review to make
+# calibration WORSE than doing nothing in that ordering. The median in
+# finalize_baseline is what actually protects against a MINORITY of bad
+# samples; these tests confirm that property directly, not a per-sample
+# check that no longer exists.
 
-def test_settling_rejects_a_sample_wildly_inconsistent_with_recent_ones():
+def test_settling_median_tolerates_a_single_contaminated_sample():
     tracker = StandTransitionTracker()
     for angle in [95.0, 96.0, 94.0, 95.0]:
         tracker.observe_baseline(angle)
@@ -466,24 +471,35 @@ def test_settling_rejects_a_sample_wildly_inconsistent_with_recent_ones():
     tracker.observe_baseline(95.0)
     tracker.finalize_baseline()
     assert tracker._observed_min_angle > 50, (
-        "an implausible settling-window sample corrupted the calibrated "
-        f"baseline: {tracker._observed_min_angle}"
+        "a single implausible settling-window sample corrupted the calibrated "
+        f"baseline despite being a clear minority: {tracker._observed_min_angle}"
     )
 
 
-def test_settling_still_accepts_genuine_gradual_movement():
-    # The settling-window guard must not be so strict it rejects a person
-    # genuinely still adjusting position during settling.
+def test_settling_median_even_tolerates_a_contaminated_first_sample():
+    # The specific case a per-sample guard got wrong: contamination as the
+    # VERY FIRST reading. The whole-window median handles this fine as
+    # long as it's still a minority of the total settling samples.
+    tracker = StandTransitionTracker()
+    tracker.observe_baseline(18.0)  # the documented real-footage contamination value
+    for angle in [95.0, 96.0, 94.0, 95.0, 93.0]:
+        tracker.observe_baseline(angle)
+    tracker.finalize_baseline()
+    assert tracker._observed_min_angle > 50, (
+        f"a contaminated FIRST settling sample corrupted the calibrated baseline: {tracker._observed_min_angle}"
+    )
+
+
+def test_settling_accepts_genuine_gradual_movement():
+    # No per-sample guard exists to over-reject a person genuinely still
+    # adjusting position during settling -- every sample should reach
+    # finalize_baseline's median.
     tracker = StandTransitionTracker()
     for angle in [110.0, 105.0, 100.0, 96.0, 93.0]:
         tracker.observe_baseline(angle)
     tracker.finalize_baseline()
-    # All 5 samples should have been accepted (none exceed
-    # MAX_BASELINE_SAMPLE_DEVIATION_DEG relative to their recent window),
-    # so the calibrated baseline should be their median (100.0), not
-    # something higher from samples being wrongly dropped.
     assert tracker._observed_min_angle == pytest.approx(100.0), (
-        f"genuine gradual settling movement was over-rejected: {tracker._observed_min_angle}"
+        f"genuine gradual settling movement produced an unexpected baseline: {tracker._observed_min_angle}"
     )
 
 
@@ -662,3 +678,44 @@ def test_is_settling_reflects_route_frame_state_not_a_separate_clock():
     session.route_frame(frame, 640, 480, 0.6, 0.5)
     assert session.is_settling(0.6) is False
     assert session._settling_finalized is True
+
+
+# ── Regression: the exact bug this pass's own fix was written to prevent
+# (baseline_calibrated staying False for a whole session) must have direct
+# coverage, not just coverage of the calibrated-baseline case ─────────────
+# Found via a third code-review pass: every existing settling test always
+# seeds real samples, so baseline_calibrated was never exercised as False --
+# a regression back to the prior bug (gating on `observed_min != inf`
+# instead) would pass every other test in this file.
+
+def test_drift_guard_stays_inert_when_settling_produces_zero_samples():
+    track = _CandidateBodySideTrack()
+    # Settling produces NOTHING for this side (e.g. landmarks never
+    # cleared MIN_LANDMARK_VISIBILITY throughout the whole window --
+    # confirmed reachable against real footage: sit_to_stand_walker.mp4).
+    track.finalize_settling()
+    assert track.transition_tracker.baseline_calibrated is False
+
+    # A frame reaches active tracking anyway (e.g. via the old fallback
+    # path once check_for_peak runs) and happens to seed a HIGH value.
+    for a in [170.0, 171.0, 172.0]:
+        track.push_frame(a, a, len(track._angle_samples) / 30)
+
+    # A genuinely low (e.g. real seated) reading afterward must NOT be
+    # rejected just because it's far below that uncalibrated value -- the
+    # drift guard has nothing real to protect yet.
+    result = track.push_frame(60.0, 60.0, 1.0)
+    assert result.get("rejected_implausible_low_angle") is not True, (
+        f"the drift guard fired despite baseline_calibrated being False: {result}"
+    )
+
+
+def test_drift_guard_activates_once_settling_actually_calibrates():
+    track = _CandidateBodySideTrack()
+    track.transition_tracker.observe_baseline(95.0)
+    track.finalize_settling()
+    assert track.transition_tracker.baseline_calibrated is True
+
+    track.push_frame(150.0, 150.0, 0.0)
+    result = track.push_frame(1.0, 1.0, 5.0)
+    assert result.get("rejected_implausible_low_angle") is True

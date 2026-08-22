@@ -210,6 +210,43 @@ section above; its rep count was already the least clinically meaningful
 number in this repo (a 30-second max-reps stress test, not the controlled
 single-rep use case this app targets).
 
+### Third review pass — a re-check found in the re-check
+Per instruction to fix the second pass's findings and then re-review the
+result, a third code-review pass (6 more finder angles) ran against the
+second pass's own fix commit. It found the fix work itself had gaps,
+including one real regression caught only by re-running real footage after
+implementing a fix that looked correct on paper:
+- **`baseline_calibrated`'s introduction (fixing the walker-video
+  regression above) needed its own regression test** — every existing
+  settling test always fed real samples, so the exact "settling produced
+  zero samples" scenario that caused that regression had no coverage.
+  Added.
+- **`clip_summary()` and `upload_video()`'s post-loop code read/finalized
+  session state with no lock at all**, while `_session_lock` (added in the
+  second pass) only covered `_mjpeg_generator` and `/advance` — a
+  concurrent `/advance` could still reset tracking state between those
+  reads, silently reporting 0 reps for a fully-processed session. Fixed by
+  locking both.
+- **A new per-sample settling-outlier guard, itself added in the second
+  pass, turned out to have a real self-poisoning bug**: only rejecting
+  samples once a 2-sample reference window existed meant a contaminated
+  FIRST sample got baked in unguarded and then caused every later genuine
+  sample to be wrongly rejected against it, with no way to recover. Caught
+  by this pass's own regression test failing — not by review alone.
+  Rather than add a third layer of patching to a per-sample check that
+  keeps finding new edge cases, removed it entirely: the whole-window
+  MEDIAN in `finalize_baseline` already protects against a minority of bad
+  samples without this failure mode, and was the mechanism doing the real
+  work anyway.
+
+56 tests passing (up from 53). Two lower-severity, accepted-not-fixed
+findings from this pass, given diminishing likelihood for a single-user
+session and the deadline: a race if `/upload` and the live `/stream` were
+used on the same shared session simultaneously (an unusual usage pattern),
+and `_session_lock` not covering `/advance` landing *between* two frames of
+a long `/upload` (only within any single frame) — full fixes for both would
+need a larger per-request session model this demo-scale app doesn't have.
+
 **Update:** `seated_knee_extension_real.mp4` (added later) IS real footage of
 this exact exercise, properly side-on — use that one first. The squat clips
 below were stand-ins used before a real clip was available; they're kept
