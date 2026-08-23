@@ -13,10 +13,9 @@ FitBuddy runs two parallel pipelines, each assigned to the compute tier appropri
 | Mode | Input | Where it runs | What you get |
 |---|---|---|---|
 | **Exercise Mode** | Video upload | Cloud (Gemini Vision) | Structured squat coaching — rep count, faults, coaching notes |
-| **Rehab Mode** | Webcam or video upload | On-device (MediaPipe) | Real-time joint angle, rep count, extension deficit, coaching cues |
-| **Sit-to-Stand Mode** | Webcam or video upload | On-device (MediaPipe) | Rep count, standing deficit, rise smoothness, coaching cues |
+| **Rehab Mode** | Webcam or video upload | On-device (MediaPipe) | Real-time joint angle, rep count, coaching cues, across two movements — seated knee extension and sit-to-stand |
 
-No video is stored on any server. Exercise mode sends 15 keyframes extracted client-side in the browser; rehab and sit-to-stand mode never leave the device.
+No video is stored on any server. Exercise mode sends 15 keyframes extracted client-side in the browser; rehab mode never leaves the device.
 
 One-page overview: [`poster/fitbuddy_poster.pdf`](poster/fitbuddy_poster.pdf)
 
@@ -136,9 +135,9 @@ npm run dev                      # → localhost:5173
 
 ---
 
-## Safety design (Rehab & Sit-to-Stand Mode)
+## Safety design (Rehab Mode)
 
-Both modes require account login and a pre-exercise intake before every session (they share one user database and login session). Clinical thresholds are sourced from published guidance:
+Both movements (seated knee extension and sit-to-stand) require account login and a pre-exercise intake before every session — they share one user database and login session, even though each is a separate backend process. Clinical thresholds are sourced from published guidance:
 
 | Signal | Threshold | Source |
 |---|---|---|
