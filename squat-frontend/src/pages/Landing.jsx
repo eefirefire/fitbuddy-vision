@@ -27,16 +27,7 @@ const MODES = [
     headline: ['Track Your', 'Rehab Progress.'],
     ctaNoun: 'Rehab Session',
     focus: 'Focus: Medical Rehab',
-    points: ['Joint symmetry', 'Range of motion', 'Smooth velocity'],
-  },
-  {
-    id: 'sit-to-stand',
-    icon: '🪑',
-    tabLabel: 'Sit-to-Stand',
-    headline: ['Track Your', 'Sit-to-Stand.'],
-    ctaNoun: 'Sit-to-Stand Session',
-    focus: 'Focus: Fall-Risk Screening',
-    points: ['Rep count', 'Standing deficit', 'Rise smoothness'],
+    points: ['Seated knee extension', 'Sit-to-stand', 'Range of motion'],
   },
 ]
 
@@ -101,9 +92,15 @@ export default function Landing() {
   // Landing remounts fresh every time you navigate back to it (e.g. browser
   // back button from /dashboard), so plain useState would always reset to
   // the default. Reading/writing localStorage makes the choice survive that.
-  const [selectedMode, setSelectedMode] = useState(
-    () => localStorage.getItem(MODE_STORAGE_KEY) || 'exercise'
-  )
+  // Falls back to 'exercise' if the stored value doesn't match any current
+  // mode (e.g. 'sit-to-stand' was briefly its own top-level mode before
+  // moving inside Rehab Mode as a movement choice -- a browser that still
+  // has that stale value saved would otherwise find no matching mode below
+  // and crash on mode.headline[0]).
+  const [selectedMode, setSelectedMode] = useState(() => {
+    const stored = localStorage.getItem(MODE_STORAGE_KEY)
+    return MODES.some(m => m.id === stored) ? stored : 'exercise'
+  })
   const mode = MODES.find(m => m.id === selectedMode)
 
   function selectMode(id) {

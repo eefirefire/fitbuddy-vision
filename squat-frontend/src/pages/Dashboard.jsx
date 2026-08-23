@@ -8,8 +8,17 @@ const MODE_LABELS = {
   ergonomic: '💼 Ergonomic Mode',
   exercise: '🏆 Exercise Mode',
   rehab: '🏥 Rehab Mode',
-  'sit-to-stand': '🪑 Sit-to-Stand Mode',
 }
+
+// Rehab Mode covers two movements, each backed by its own standalone Flask
+// pipeline (rehab_knee_extension.py on 5050, rehab_sit_to_stand.py on 5052)
+// — picking one here just chooses which panel/backend to talk to, not a
+// separate top-level app mode.
+const REHAB_MOVEMENT_KEY = 'fitbuddy-rehab-movement'
+const REHAB_MOVEMENTS = [
+  { id: 'knee-extension', label: 'Seated Knee Extension' },
+  { id: 'sit-to-stand', label: 'Sit-to-Stand' },
+]
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -26,6 +35,16 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [dragOver, setDragOver] = useState(false)
+  // Persisted the same way the top-level mode choice is (survives a hard
+  // refresh on this page) — which movement within Rehab Mode was last open.
+  const [rehabMovement, setRehabMovement] = useState(
+    () => localStorage.getItem(REHAB_MOVEMENT_KEY) || 'knee-extension'
+  )
+
+  function selectRehabMovement(id) {
+    setRehabMovement(id)
+    localStorage.setItem(REHAB_MOVEMENT_KEY, id)
+  }
 
   function handleFile(file) {
     if (!file || !file.type.startsWith('video/')) return
@@ -85,7 +104,23 @@ export default function Dashboard() {
       </nav>
 
       {/* Main grid */}
-      {mode === 'rehab' ? <RehabPanel /> : mode === 'sit-to-stand' ? <SitToStandPanel /> : (
+      {mode === 'rehab' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <div className="mode-tabs" style={{ alignSelf: 'flex-start' }}>
+            {REHAB_MOVEMENTS.map(m => (
+              <button
+                key={m.id}
+                className={`mode-tab ${rehabMovement === m.id ? 'mode-tab-active' : ''}`}
+                onClick={() => selectRehabMovement(m.id)}
+                type="button"
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          {rehabMovement === 'sit-to-stand' ? <SitToStandPanel /> : <RehabPanel />}
+        </div>
+      ) : (
       <div className="dash-grid">
         {/* Left: video panel */}
         <div className="dash-card video-panel">
