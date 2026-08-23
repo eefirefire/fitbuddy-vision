@@ -49,10 +49,26 @@ export default function SitToStandPanel() {
   const [streamKey, setStreamKey] = useState(0)
   const [liveStatus, setLiveStatus] = useState(null)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
+  // Captions text-mirror of the voice cues below — speechSynthesis has no
+  // visible trace of its own, which makes the voice-cue feature unverifiable
+  // in a silent screen recording (or for anyone testing with speakers off).
+  // Every place that calls speechSynthesis.speak also calls this so the same
+  // cue is visible on screen for a few seconds, not just spoken.
+  const [captionText, setCaptionText] = useState(null)
+  const captionTimeoutRef = useRef(null)
   const fileInputRef = useRef(null)
   const lastSpokenCueSeqRef = useRef(0)
   const lastSpokenAlignmentSeqRef = useRef(0)
   const previousStateRef = useRef(null)
+
+  function speak(text) {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(text))
+    }
+    setCaptionText(text)
+    if (captionTimeoutRef.current) clearTimeout(captionTimeoutRef.current)
+    captionTimeoutRef.current = setTimeout(() => setCaptionText(null), 3500)
+  }
 
   // Poll the live-status endpoint while the camera is actually streaming —
   // same pattern as RehabPanel, see that component for the full reasoning.
@@ -80,9 +96,7 @@ export default function SitToStandPanel() {
     if (!voiceEnabled || !liveStatus?.active || !liveStatus.cue_pending?.length) return
     for (const { seq, text } of liveStatus.cue_pending) {
       lastSpokenCueSeqRef.current = Math.max(lastSpokenCueSeqRef.current, seq)
-      if (typeof window !== 'undefined' && window.speechSynthesis) {
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(text))
-      }
+      speak(text)
     }
   }, [liveStatus, voiceEnabled])
 
@@ -93,9 +107,7 @@ export default function SitToStandPanel() {
     if (!voiceEnabled || !liveStatus?.active || !liveStatus.alignment_cue_pending?.length) return
     for (const { seq, text } of liveStatus.alignment_cue_pending) {
       lastSpokenAlignmentSeqRef.current = Math.max(lastSpokenAlignmentSeqRef.current, seq)
-      if (typeof window !== 'undefined' && window.speechSynthesis) {
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(text))
-      }
+      speak(text)
     }
   }, [liveStatus, voiceEnabled])
 
@@ -111,9 +123,7 @@ export default function SitToStandPanel() {
     previousStateRef.current = state
     if (!voiceEnabled) return
     const hint = STATE_COPY[state]?.hint
-    if (hint && typeof window !== 'undefined' && window.speechSynthesis) {
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(hint))
-    }
+    if (hint) speak(hint)
   }, [state, voiceEnabled])
 
   // Same login + intake gate as RehabPanel, checked against the SAME backend
@@ -321,7 +331,21 @@ export default function SitToStandPanel() {
         {canRecord && inputMode === 'live' && (
           liveStreaming ? (
             <div className="video-wrapper">
-              <img key={streamKey} src={`${SIT_TO_STAND_STREAM_URL}?session=${streamKey}`} alt="Live camera feed with pose overlay" className="video-preview" />
+              <div style={{ position: 'relative' }}>
+                <img key={streamKey} src={`${SIT_TO_STAND_STREAM_URL}?session=${streamKey}`} alt="Live camera feed with pose overlay" className="video-preview" />
+                {voiceEnabled && captionText && (
+                  <div
+                    style={{
+                      position: 'absolute', left: '50%', bottom: 16, transform: 'translateX(-50%)',
+                      background: 'rgba(10, 14, 28, 0.88)', color: '#fff', padding: '10px 18px',
+                      borderRadius: 8, fontSize: '0.95rem', fontWeight: 600, textAlign: 'center',
+                      maxWidth: '90%', border: '1px solid rgba(126,184,212,0.4)', pointerEvents: 'none',
+                    }}
+                  >
+                    🔊 {captionText}
+                  </div>
+                )}
+              </div>
               <LiveStatusHud status={liveStatus} />
               <div className="video-actions">
                 <button className="ghost-btn" onClick={handleStopCamera}>Stop Camera</button>
